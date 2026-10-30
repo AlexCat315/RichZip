@@ -1,0 +1,79 @@
+import { Theme } from "../theme.slint";
+import { MzButton } from "mz-button.slint";
+
+export struct BreadcrumbItem {
+    name: string,
+    path: string,
+}
+
+export component NavigationBar inherits Rectangle {
+    in property <[BreadcrumbItem]> items: [];
+    in property <bool> can-up: false;
+    callback up();
+    callback navigate-to(string);
+
+    height: 38px;
+    background: #FFFFFF;
+
+    Rectangle {
+        x: 0;
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.mist;
+    }
+
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 8px;
+        spacing: 8px;
+
+        MzButton {
+            text: "← 返回上级";
+            height: 28px;
+            horizontal-stretch: 0;
+            enabled: root.can-up;
+            clicked => { root.up(); }
+        }
+
+        Flickable {
+            horizontal-stretch: 1;
+            content-width: crumbs.preferred-width;
+            interactive: false;
+
+            crumbs := HorizontalLayout {
+                spacing: 2px;
+                alignment: start;
+
+                for item[index] in root.items: HorizontalLayout {
+                    spacing: 2px;
+                    if index > 0: Text {
+                        text: "›";
+                        color: Theme.ink-dim;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        border-radius: 3px;
+                        background: touch.has-hover ? Theme.sakura-soft : transparent;
+
+                        touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.navigate-to(item.path); }
+                        }
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            Text {
+                                text: item.name;
+                                color: index == root.items.length - 1 ? Theme.ink : Theme.ink-dim;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

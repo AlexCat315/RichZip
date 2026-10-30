@@ -1,0 +1,24 @@
+// 文件类型徽标的配色，和主题同色系、压低保和
+export global Utils {
+    public pure function type-color(ext: string, folder: bool) -> color {
+        if folder {
+            return #2E4057;
+        }
+        if ext == "JPG" || ext == "PNG" || ext == "GIF" || ext == "PSD" {
+            return #CE6B7F;
+        }
+        if ext == "PDF" {
+            return #B5614E;
+        }
+        if ext == "ASS" || ext == "SRT" {
+            return #7E86C4;
+        }
+        if ext == "FLAC" || ext == "MP3" {
+            return #7A9B76;
+        }
+        if ext == "ZIP" || ext == "7Z" || ext == "RAR" {
+            return #B08A5E;
+        }
+        return #8B93A1;
+    }
+}

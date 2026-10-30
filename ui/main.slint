@@ -1,0 +1,328 @@
+import { Theme } from "theme.slint";
+import { ListView } from "std-widgets.slint";
+import { TitleBar } from "components/title-bar.slint";
+import { MzButton } from "components/mz-button.slint";
+import { FileRow, FileItem } from "components/file-row.slint";
+import { EmptyState } from "components/empty-state.slint";
+import { DetailPanel } from "components/detail-panel.slint";
+import { NavigationBar, BreadcrumbItem } from "components/navigation-bar.slint";
+
+export { FileItem, BreadcrumbItem }
+
+export component MainWindow inherits Window {
+    no-frame: true;
+    title: "MugenZip";
+    icon: @image-url("../assets/logo_box.png");
+    background: Theme.paper;
+    default-font-family: "Microsoft YaHei UI";
+    preferred-width: 960px;
+    preferred-height: 640px;
+    min-width: 900px;
+    min-height: 600px;
+
+    in-out property <[FileItem]> files: [];
+    in-out property <[BreadcrumbItem]> breadcrumbs: [];
+    in-out property <int> selected: -1;
+    in property <bool> can-navigate-up: false;
+    in property <bool> archive-open: false;
+    in property <string> archive-name: "";
+    in property <string> archive-format: "";
+    in property <string> archive-summary: "未打开压缩包";
+    in property <bool> busy: false;
+    in property <bool> extracting: false;
+    in property <bool> drop-hover: false;
+    in property <float> progress: 0;
+    in property <string> progress-text: "";
+    in property <string> current-file: "";
+    in property <string> status-text: "就绪";
+    in property <string> status-detail: "";
+    in property <bool> has-error: false;
+
+    callback open-archive();
+    callback extract-to();
+    callback cancel-extract();
+    callback activate-item(int);
+    callback navigate-to(string);
+    callback navigate-up();
+    callback move-window(length, length);
+    callback minimize-clicked();
+    callback close-clicked();
+
+    Rectangle {
+        border-width: root.drop-hover ? 2px : 1px;
+        border-color: root.drop-hover ? Theme.sakura : #C8C4B6;
+        clip: true;
+
+        VerticalLayout {
+            TitleBar {
+                vertical-stretch: 0;
+                move-window(dx, dy) => { root.move-window(dx, dy); }
+                minimize-clicked => { root.minimize-clicked(); }
+                close-clicked => { root.close-clicked(); }
+            }
+
+            Rectangle {
+                height: 50px;
+                vertical-stretch: 0;
+                background: #FFFFFF;
+
+                HorizontalLayout {
+                    padding: 10px;
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 8px;
+
+                    MzButton {
+                        text: "打开压缩包";
+                        primary: true;
+                        enabled: !root.busy;
+                        horizontal-stretch: 0;
+                        clicked => { root.open-archive(); }
+                    }
+                    MzButton {
+                        text: "解压到…";
+                        enabled: root.archive-open && !root.busy;
+                        horizontal-stretch: 0;
+                        clicked => { root.extract-to(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text {
+                        visible: root.archive-open;
+                        text: root.archive-format;
+                        color: Theme.sakura-deep;
+                        font-size: 12px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.archive-open ? root.archive-name : "ZIP / 7Z / RAR / TAR.GZ";
+                        color: Theme.ink-dim;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        max-width: 360px;
+                    }
+                }
+                Rectangle {
+                    x: 0;
+                    y: parent.height - 1px;
+                    width: parent.width;
+                    height: 1px;
+                    background: Theme.mist;
+                }
+            }
+
+            content := Rectangle {
+                vertical-stretch: 1;
+
+                if !root.archive-open && !root.busy: EmptyState {
+                    width: 100%;
+                    height: 100%;
+                    open-clicked => { root.open-archive(); }
+                }
+                if !root.archive-open && root.busy: VerticalLayout {
+                    width: 100%;
+                    height: 100%;
+                    alignment: center;
+                    spacing: 8px;
+                    Text {
+                        text: "正在读取压缩包…";
+                        color: Theme.ink;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: root.archive-name;
+                        color: Theme.ink-dim;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                if root.archive-open: HorizontalLayout {
+                    width: 100%;
+                    height: 100%;
+                    spacing: 0;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.paper;
+
+                        VerticalLayout {
+                            padding: 8px;
+                            padding-top: 6px;
+                            spacing: 0;
+
+                            NavigationBar {
+                                vertical-stretch: 0;
+                                items: root.breadcrumbs;
+                                can-up: root.can-navigate-up;
+                                up => { root.navigate-up(); }
+                                navigate-to(path) => { root.navigate-to(path); }
+                            }
+
+                            Rectangle {
+                                height: 26px;
+                                vertical-stretch: 0;
+                                HorizontalLayout {
+                                    padding-left: 54px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+                                    Text {
+                                        text: "名称";
+                                        color: Theme.ink-dim;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: "大小";
+                                        color: Theme.ink-dim;
+                                        font-size: 11px;
+                                        width: 76px;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "修改日期";
+                                        color: Theme.ink-dim;
+                                        font-size: 11px;
+                                        width: 86px;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            if root.files.length == 0: VerticalLayout {
+                                vertical-stretch: 1;
+                                alignment: center;
+                                Text {
+                                    text: "此文件夹为空";
+                                    color: Theme.ink-dim;
+                                    font-size: 13px;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                            if root.files.length > 0: ListView {
+                                vertical-stretch: 1;
+                                for item[index] in root.files: FileRow {
+                                    item: item;
+                                    selected: index == root.selected;
+                                    clicked => { root.selected = index; }
+                                    activated => { root.activate-item(index); }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        width: 1px;
+                        horizontal-stretch: 0;
+                        background: Theme.mist;
+                    }
+
+                    DetailPanel {
+                        width: 250px;
+                        horizontal-stretch: 0;
+                        has-selection: root.selected >= 0 && root.selected < root.files.length;
+                        item: root.selected >= 0 && root.selected < root.files.length
+                            ? root.files[root.selected]
+                            : { id: "", name: "", ext: "", size: "", modified: "", path: "", folder: false };
+                    }
+                }
+            }
+
+            if root.extracting: Rectangle {
+                height: 58px;
+                vertical-stretch: 0;
+                background: #FCFBF8;
+                VerticalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    padding-top: 6px;
+                    padding-bottom: 8px;
+                    spacing: 7px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Text {
+                            text: root.current-file;
+                            color: Theme.ink-dim;
+                            font-size: 11px;
+                            overflow: elide;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: root.progress-text;
+                            color: Theme.ink;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                        MzButton {
+                            text: "取消提取";
+                            height: 25px;
+                            horizontal-stretch: 0;
+                            clicked => { root.cancel-extract(); }
+                        }
+                    }
+                    Rectangle {
+                        height: 5px;
+                        border-radius: 3px;
+                        background: Theme.mist;
+                        clip: true;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * root.progress;
+                            height: parent.height;
+                            border-radius: 3px;
+                            background: Theme.sakura-deep;
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 30px;
+                vertical-stretch: 0;
+                background: #FFFFFF;
+
+                Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: 1px;
+                    background: Theme.mist;
+                }
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 8px;
+
+                    Text {
+                        text: root.status-detail == "" ? root.archive-summary : root.status-detail;
+                        color: Theme.ink-dim;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        horizontal-stretch: 0;
+                        border-radius: 4px;
+                        background: root.has-error ? Theme.sakura-deep : root.busy ? Theme.sakura : Theme.matcha;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: root.status-text;
+                        color: root.has-error ? Theme.sakura-deep : Theme.ink-dim;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
