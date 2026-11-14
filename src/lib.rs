@@ -1,4 +1,8 @@
-slint::include_modules!();
+use cove_ui::ApplicationLaunch;
+use cove_ui::compose::primitives::text::Text;
 
-pub mod app;
-pub mod engine;
+fn application() -> ApplicationLaunch {
+    ApplicationLaunch::new(Text::new("MugenZip"))
+}
+
+cove_ui::application!(launch = application);

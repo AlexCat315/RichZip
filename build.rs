@@ -1,5 +1,5 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    slint_build::compile("ui/main.slint")?;
+    println!("cargo:rerun-if-changed=assets/logo_box.ico");
     #[cfg(windows)]
     winresource::WindowsResource::new()
         .set_icon("assets/logo_box.ico")

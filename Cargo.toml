@@ -1,13 +1,19 @@
 [package]
 name = "mugenzip"
-version = "0.1.0"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.99.1"
 default-run = "mugenzip"
 build = "build.rs"
+publish = false
+
+[package.metadata.cove]
+id = "com.mugenzip.app"
+name = "MugenZip"
+build = 1
 
 [dependencies]
-slint = { version = "1.18", features = ["renderer-software", "software-renderer-systemfonts", "unstable-winit-030"] }
-png = "0.17"
+cove-ui = { path = "../Cove" }
 zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-ng"] }
 sevenz-rust = { version = "0.6.1", default-features = false }
 unrar-ng = { version = "0.7.7", default-features = false }
@@ -15,8 +21,10 @@ unrar-ng-sys = { version = "0.7.7", default-features = false, features = ["std"]
 widestring = "1"
 tar = "0.4"
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-ng"] }
-rfd = "0.17.2"
 
 [build-dependencies]
-slint-build = "1.18"
 winresource = "0.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
