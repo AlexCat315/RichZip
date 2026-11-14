@@ -1,8 +1,4 @@
-use cove_ui::ApplicationLaunch;
-use cove_ui::compose::primitives::text::Text;
+mod app;
+mod engine;
 
-fn application() -> ApplicationLaunch {
-    ApplicationLaunch::new(Text::new("MugenZip"))
-}
-
-cove_ui::application!(launch = application);
+cove_ui::application!(launch = app::application);

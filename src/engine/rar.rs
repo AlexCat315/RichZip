@@ -13,6 +13,13 @@ use super::{
     ExtractionProgress, Result,
 };
 
+/// `wchar_t` is signed on Unix, while `WideCString` takes the unsigned wide char
+/// of the same width.
+#[cfg(windows)]
+type WideChar = u16;
+#[cfg(not(windows))]
+type WideChar = u32;
+
 pub struct RarBackend {
     path: PathBuf,
 }
@@ -189,7 +196,7 @@ impl RawRar {
                 rar_error(code)
             )));
         }
-        let filename = std::ptr::addr_of!(header.filename_w).cast::<sys::WCHAR>();
+        let filename = std::ptr::addr_of!(header.filename_w).cast::<WideChar>();
         let name = unsafe { WideCString::from_ptr_truncate(filename, 1024) }.to_string_lossy();
         Ok(Some(RawHeader { name }))
     }

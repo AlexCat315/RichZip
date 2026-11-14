@@ -1,9 +1,27 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use crate::engine::{ArchiveEntry, EntryKind};
-use crate::{BreadcrumbItem, FileItem};
+use crate::engine::{ArchiveEntry, EntryKind, format_size};
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileItem {
+    pub id: String,
+    pub name: String,
+    pub ext: String,
+    pub size: String,
+    pub modified: String,
+    pub path: String,
+    pub folder: bool,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BreadcrumbItem {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct ArchiveBrowser {
     archive_name: String,
     children: BTreeMap<String, Vec<FileItem>>,
@@ -30,7 +48,7 @@ impl ArchiveBrowser {
             } else {
                 let (parent, name) = split_parent(&path);
                 browser.ensure_directory(parent);
-                let item = browser.file_item(&entry, name, &path, false);
+                let item = browser.file_item(&entry, name, &path);
                 browser
                     .children
                     .entry(parent.to_owned())
@@ -56,34 +74,21 @@ impl ArchiveBrowser {
 
     pub fn breadcrumbs(&self, directory: &str) -> Vec<BreadcrumbItem> {
         let mut breadcrumbs = vec![BreadcrumbItem {
-            name: self.archive_name.clone().into(),
-            path: "".into(),
+            name: self.archive_name.clone(),
+            path: String::new(),
         }];
         let mut path = String::new();
-        for component in directory
-            .split('/')
-            .filter(|component| !component.is_empty())
-        {
+        for component in directory.split('/').filter(|part| !part.is_empty()) {
             if !path.is_empty() {
                 path.push('/');
             }
             path.push_str(component);
             breadcrumbs.push(BreadcrumbItem {
-                name: component.into(),
-                path: path.clone().into(),
+                name: component.to_owned(),
+                path: path.clone(),
             });
         }
         breadcrumbs
-    }
-
-    pub fn child_directory(&self, directory: &str, index: usize) -> Option<String> {
-        self.children.get(directory)?.get(index).and_then(|item| {
-            if item.folder {
-                Some(item.id.to_string())
-            } else {
-                None
-            }
-        })
     }
 
     pub fn contains_directory(&self, directory: &str) -> bool {
@@ -92,10 +97,7 @@ impl ArchiveBrowser {
 
     fn ensure_directory(&mut self, directory: &str) {
         let mut current = String::new();
-        for component in directory
-            .split('/')
-            .filter(|component| !component.is_empty())
-        {
+        for component in directory.split('/').filter(|part| !part.is_empty()) {
             let parent = current.clone();
             if !current.is_empty() {
                 current.push('/');
@@ -111,30 +113,32 @@ impl ArchiveBrowser {
 
     fn folder_item(&self, name: &str, path: &str) -> FileItem {
         FileItem {
-            id: path.into(),
-            name: name.into(),
-            ext: "".into(),
-            size: "—".into(),
-            modified: "—".into(),
-            path: self.full_path(path).into(),
+            id: path.to_owned(),
+            name: name.to_owned(),
+            ext: String::new(),
+            size: "—".to_owned(),
+            modified: "—".to_owned(),
+            path: self.full_path(path),
             folder: true,
+            bytes: 0,
         }
     }
 
-    fn file_item(&self, entry: &ArchiveEntry, name: &str, path: &str, folder: bool) -> FileItem {
+    fn file_item(&self, entry: &ArchiveEntry, name: &str, path: &str) -> FileItem {
         let extension = Path::new(name)
             .extension()
             .unwrap_or_default()
             .to_string_lossy()
             .to_uppercase();
         FileItem {
-            id: path.into(),
-            name: name.into(),
-            ext: extension.into(),
-            size: crate::engine::format_size(entry.size).into(),
-            modified: entry.modified.clone().into(),
-            path: self.full_path(path).into(),
-            folder,
+            id: path.to_owned(),
+            name: name.to_owned(),
+            ext: extension,
+            size: format_size(entry.size),
+            modified: entry.modified.clone(),
+            path: self.full_path(path),
+            folder: false,
+            bytes: entry.size,
         }
     }
 
