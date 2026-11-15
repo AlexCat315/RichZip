@@ -45,6 +45,7 @@ pub struct ExtractionProgress {
 pub struct ExtractReport {
     pub output_dir: PathBuf,
     pub completed: usize,
+    pub skipped: usize,
 }
 
 #[derive(Debug)]

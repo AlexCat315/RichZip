@@ -111,6 +111,7 @@ impl Archive for ZipBackend {
         Ok(ExtractReport {
             output_dir: plan.output_dir().to_path_buf(),
             completed: state.completed(),
+            skipped: plan.skipped(),
         })
     }
 }
@@ -174,6 +175,34 @@ mod tests {
         assert!(destination.join("alpha.txt").is_file());
         assert!(destination.join("gamma.txt").is_file());
         assert!(!destination.join("beta.txt").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn links_are_skipped_instead_of_failing_the_job() {
+        let root = temp_dir("symlink");
+        let destination = root.join("out");
+        let entries = vec![
+            ArchiveEntry {
+                name: "payload.txt".into(),
+                size: 5,
+                modified: "—".into(),
+                kind: EntryKind::File,
+            },
+            ArchiveEntry {
+                name: "payload-link".into(),
+                size: 11,
+                modified: "—".into(),
+                kind: EntryKind::Symlink,
+            },
+        ];
+        let plan =
+            ExtractionPlan::with_selection(&root.join("links.zip"), &destination, &entries, &|_| {
+                true
+            }, false)
+            .expect("a package with links still plans");
+        assert_eq!(plan.skipped(), 1, "the link is counted, not fatal");
+        assert_eq!(plan.entries().len(), 1, "the regular file stays in the plan");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

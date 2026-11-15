@@ -68,6 +68,14 @@ pub enum Tone {
     Error,
 }
 
+/// One finished extraction: the package, where it landed, and when.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtractRecord {
+    pub name: String,
+    pub destination: String,
+    pub at: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
     pub fraction: f64,
@@ -122,6 +130,9 @@ enum TaskEvent {
 #[derive(Clone)]
 pub struct AppModel {
     pub archive: State<Option<Arc<LoadedArchive>>>,
+    /// What has already been unpacked, newest first — package and落点 together,
+    /// because "解到哪了" is the question this answers.
+    pub history: State<Vec<ExtractRecord>>,
     pub directory: State<String>,
     pub selection: State<BTreeSet<String>>,
     /// The folder highlighted in the sidebar outline.
@@ -147,13 +158,15 @@ pub struct AppModel {
 impl AppModel {
     pub fn new() -> Self {
         let archive = State::new(None);
+        let history = State::new(Vec::new());
+        let history_for_events = history.clone();
         let directory = State::new(String::new());
         let selection = State::new(BTreeSet::new());
         let tree_selection = State::new(Some(String::new()));
         let search = State::new(TextBuffer::empty());
         let table_sort = State::new(None);
         let destination = State::new(None);
-        let wrap_in_folder = State::new(false);
+        let wrap_in_folder = State::new(true);
         let phase = State::new(Phase::Idle);
         let progress = State::new(Progress::default());
         let status = State::new(Status::default());
@@ -181,6 +194,7 @@ impl AppModel {
                     &selection,
                     &tree_selection,
                     &destination,
+                    &history_for_events,
                     &phase,
                     &progress,
                     &status,
@@ -192,6 +206,7 @@ impl AppModel {
 
         Self {
             archive,
+            history,
             directory,
             selection,
             tree_selection,
@@ -215,6 +230,7 @@ impl AppModel {
     pub fn dynamic_fields(&self) -> Vec<DynamicField> {
         vec![
             DynamicField::state("archive", &self.archive),
+            DynamicField::state("history", &self.history),
             DynamicField::state("directory", &self.directory),
             DynamicField::state("selection", &self.selection),
             DynamicField::state("treeSelection", &self.tree_selection),
@@ -555,6 +571,57 @@ impl AppModel {
         });
     }
 
+    /// The落点 the sidebar offers: the package's own folder first, then the
+    /// host's known folders. A destination picker, not a browser.
+    pub fn destination_choices(&self) -> Vec<(String, PathBuf)> {
+        let mut choices: Vec<(String, PathBuf)> = Vec::new();
+        if let Some(archive) = self.archive.get()
+            && let Some(folder) = archive.folder_dir()
+        {
+            let label = if self.wrap_in_folder.get() {
+                format!("当前文件夹/{}", engine::archive_base_name(&archive.path))
+            } else {
+                "当前文件夹".to_owned()
+            };
+            choices.push((label, folder));
+        }
+        for (label, path) in browser::known_dirs() {
+            if !choices.iter().any(|(_, existing)| existing == &path) {
+                choices.push((label, path));
+            }
+        }
+        choices
+    }
+
+    /// True when this choice is the one currently selected.
+    pub fn destination_is(&self, path: &Path) -> bool {
+        self.destination.get().as_deref() == Some(path)
+    }
+
+    /// The label the sidebar shows for the current target.
+    pub fn destination_name(&self) -> String {
+        let Some(destination) = self.destination.get() else {
+            return "未选择".into();
+        };
+        for (label, path) in self.destination_choices() {
+            if path == destination {
+                return label;
+            }
+        }
+        abbreviate_home(&destination)
+    }
+
+    /// Packages waiting behind the open one.
+    pub fn queued(&self) -> Vec<PathBuf> {
+        let current = self.archive.get().map(|archive| archive.path.clone());
+        self.recent
+            .get()
+            .into_iter()
+            .filter(|path| Some(path) != current.as_ref() && path.is_file())
+            .take(3)
+            .collect()
+    }
+
     pub fn enter_directory(&self, directory: String) {
         let Some(archive) = self.archive.get() else {
             return;
@@ -646,6 +713,7 @@ fn apply_event(
     selection: &State<BTreeSet<String>>,
     tree_selection: &State<Option<String>>,
     destination: &State<Option<PathBuf>>,
+    history: &State<Vec<ExtractRecord>>,
     phase: &State<Phase>,
     progress: &State<Progress>,
     status: &State<Status>,
@@ -721,6 +789,20 @@ fn apply_event(
             phase.set(Phase::Ready);
             match result {
                 Ok(report) => {
+                    if let Some(archive) = archive.get() {
+                        let mut records = history.get();
+                        records.retain(|record| record.name != archive.name);
+                        records.insert(
+                            0,
+                            ExtractRecord {
+                                name: archive.name.clone(),
+                                destination: abbreviate_home(&report.output_dir),
+                                at: browser::format_timestamp(std::time::SystemTime::now()),
+                            },
+                        );
+                        records.truncate(4);
+                        history.set(records);
+                    }
                     progress.set(Progress {
                         fraction: 1.0,
                         label: "100%".into(),
@@ -728,11 +810,20 @@ fn apply_event(
                     });
                     status.set(Status {
                         text: "解压完成".into(),
-                        detail: format!(
-                            "{} 个文件 · {}",
-                            report.completed,
-                            abbreviate_home(&report.output_dir)
-                        ),
+                        detail: if report.skipped == 0 {
+                            format!(
+                                "{} 个文件 · {}",
+                                report.completed,
+                                abbreviate_home(&report.output_dir)
+                            )
+                        } else {
+                            format!(
+                                "{} 个文件 · 跳过 {} 个链接 · {}",
+                                report.completed,
+                                report.skipped,
+                                abbreviate_home(&report.output_dir)
+                            )
+                        },
                         tone: Tone::Ok,
                     });
                 }

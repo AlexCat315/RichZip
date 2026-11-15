@@ -128,6 +128,7 @@ impl Archive for TarBackend {
         Ok(ExtractReport {
             output_dir: plan.output_dir().to_path_buf(),
             completed: state.completed(),
+            skipped: plan.skipped(),
         })
     }
 }

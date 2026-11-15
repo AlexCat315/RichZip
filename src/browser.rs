@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mugenzip_core::{ArchiveEntry, EntryKind, format_size};
 
@@ -228,4 +228,72 @@ pub fn normalize_path(path: &str) -> String {
 
 fn split_parent(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
+}
+
+/// The host's own "save to" folders. Same idea on every platform, different
+/// names: Finder's Desktop/Documents/Downloads, Explorer's Desktop/Documents/
+/// Downloads, GNOME's XDG equivalents. Missing ones are simply not offered.
+pub fn known_dirs() -> Vec<(String, PathBuf)> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<(String, PathBuf)> = Vec::new();
+
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(("桌面".to_owned(), home.join("Desktop")));
+        dirs.push(("下载".to_owned(), home.join("Downloads")));
+        dirs.push(("文稿".to_owned(), home.join("Documents")));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        dirs.push(("桌面".to_owned(), home.join("Desktop")));
+        dirs.push(("下载".to_owned(), home.join("Downloads")));
+        dirs.push(("文档".to_owned(), home.join("Documents")));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        dirs.push(("桌面".to_owned(), home.join("Desktop")));
+        dirs.push(("下载".to_owned(), home.join("Downloads")));
+        dirs.push(("文档".to_owned(), home.join("Documents")));
+    }
+
+    dirs.retain(|(_, path)| path.is_dir());
+    dirs
+}
+
+/// "2026-11-15 09:12" without pulling a date crate in for one column.
+pub fn format_timestamp(time: std::time::SystemTime) -> String {
+    const MONTHS: [&str; 12] = [
+        "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12",
+    ];
+    let Ok(elapsed) = time.duration_since(std::time::UNIX_EPOCH) else {
+        return "—".to_owned();
+    };
+    let total_hours = elapsed.as_secs() / 3600;
+    let total_days = total_hours / 24;
+    let hour = total_hours % 24;
+    let minute = (elapsed.as_secs() / 60) % 60;
+
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = total_days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    let index = (month - 1).clamp(0, 11) as usize;
+    format!(
+        "{year}-{}-{:02} {:02}:{:02}",
+        MONTHS[index], day, hour, minute
+    )
 }

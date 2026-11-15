@@ -62,6 +62,7 @@ pub struct ExtractionPlan {
     entries: Vec<SafeEntry>,
     output_dir: PathBuf,
     workspace: TaskWorkspace,
+    skipped: usize,
 }
 
 impl ExtractionPlan {
@@ -85,7 +86,10 @@ impl ExtractionPlan {
         if chosen.is_empty() {
             return Err(ArchiveError::new("没有可提取的条目"));
         }
-        let validated = validate_entries(&chosen)?;
+        let (validated, skipped) = validate_entries(&chosen)?;
+        if validated.is_empty() {
+            return Err(ArchiveError::new("选中的条目都是链接或特殊文件，没有可提取的内容"));
+        }
         let output_dir = if smart {
             smart_output_dir(archive_path, destination, &validated)
         } else {
@@ -137,7 +141,13 @@ impl ExtractionPlan {
             entries: safe_entries,
             output_dir,
             workspace,
+            skipped,
         })
+    }
+
+    /// Entries left out because they were links or special files.
+    pub fn skipped(&self) -> usize {
+        self.skipped
     }
 
     pub fn entries(&self) -> &[SafeEntry] {
@@ -207,16 +217,17 @@ impl ExtractionPlan {
     }
 }
 
-fn validate_entries(entries: &[(usize, ArchiveEntry)]) -> Result<Vec<ValidatedEntry>> {
+fn validate_entries(entries: &[(usize, ArchiveEntry)]) -> Result<(Vec<ValidatedEntry>, usize)> {
     let mut validated = Vec::with_capacity(entries.len());
     let mut paths: HashMap<String, (EntryKind, String)> = HashMap::new();
+    let mut skipped = 0_usize;
 
     for (index, entry) in entries {
         if entry.kind == EntryKind::Symlink || entry.kind == EntryKind::Unsupported {
-            return Err(ArchiveError::new(format!(
-                "{} 是链接或特殊条目，M1 拒绝提取",
-                entry.name
-            )));
+            // Links and device entries are never materialised: a package with
+            // node_modules links still extracts, we just leave those out.
+            skipped += 1;
+            continue;
         }
         let relative = safe_relative_path(&entry.name)?;
         let key = path_key(&relative);
@@ -232,6 +243,7 @@ fn validate_entries(entries: &[(usize, ArchiveEntry)]) -> Result<Vec<ValidatedEn
         }
         validated.push((*index, relative, entry.name.clone(), entry.size, entry.kind));
     }
+
 
     for (_, relative, name, _, kind) in &validated {
         let mut parent = relative.parent();
@@ -260,7 +272,7 @@ fn validate_entries(entries: &[(usize, ArchiveEntry)]) -> Result<Vec<ValidatedEn
             }
         }
     }
-    Ok(validated)
+    Ok((validated, skipped))
 }
 
 fn safe_relative_path(name: &str) -> Result<PathBuf> {
