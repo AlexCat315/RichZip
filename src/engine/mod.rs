@@ -10,7 +10,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub use safety::ExtractionPlan;
+pub use safety::{ExtractionPlan, archive_base_name, unique_output_dir};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -92,9 +92,13 @@ pub type Result<T> = std::result::Result<T, ArchiveError>;
 pub trait Archive {
     fn list(&mut self) -> Result<Vec<ArchiveEntry>>;
 
-    fn extract(
+    /// Extracts the entries matching `select`. `smart` enables the bundle-into-a
+    /// -named-folder output policy; when false the destination is used verbatim.
+    fn extract_entries(
         &mut self,
         destination: &Path,
+        select: &dyn Fn(&ArchiveEntry) -> bool,
+        smart: bool,
         progress: &mut dyn FnMut(ExtractionProgress),
         cancel: &AtomicBool,
     ) -> Result<ExtractReport>;

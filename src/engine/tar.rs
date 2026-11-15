@@ -75,16 +75,19 @@ impl Archive for TarBackend {
         Ok(result)
     }
 
-    fn extract(
+    fn extract_entries(
         &mut self,
         destination: &Path,
+        select: &dyn Fn(&ArchiveEntry) -> bool,
+        smart: bool,
         progress: &mut dyn FnMut(ExtractionProgress),
         cancel: &AtomicBool,
     ) -> Result<ExtractReport> {
         let entries = self.list()?;
-        let plan = ExtractionPlan::new(&self.path, destination, &entries)?;
+        let plan = ExtractionPlan::with_selection(&self.path, destination, &entries, select, smart)?;
+        let chosen: Vec<ArchiveEntry> = entries.iter().filter(|entry| select(entry)).cloned().collect();
         let mut archive = self.open()?;
-        let mut state = EntryProgress::new(&entries, progress, cancel)?;
+        let mut state = EntryProgress::new(&chosen, progress, cancel)?;
         let tar_entries = archive
             .entries()
             .map_err(|error| ArchiveError::new(format!("无法读取 TAR 条目：{error}")))?;
@@ -93,10 +96,9 @@ impl Archive for TarBackend {
             let mut entry = entry.map_err(|error| {
                 ArchiveError::new(format!("读取 TAR 第 {} 个条目失败：{error}", index + 1))
             })?;
-            let safe = plan
-                .entries()
-                .get(index)
-                .ok_or_else(|| ArchiveError::new("TAR 条目顺序在提取过程中发生变化"))?;
+            let Some(safe) = plan.entry_at_source(index) else {
+                continue;
+            };
             if safe.kind == EntryKind::Directory {
                 continue;
             }

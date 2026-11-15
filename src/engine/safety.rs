@@ -65,9 +65,32 @@ pub struct ExtractionPlan {
 }
 
 impl ExtractionPlan {
-    pub fn new(archive_path: &Path, destination: &Path, entries: &[ArchiveEntry]) -> Result<Self> {
-        let validated = validate_entries(entries)?;
-        let output_dir = smart_output_dir(archive_path, destination, &validated);
+    /// Builds a plan for the entries matching `select`, keeping each entry's real
+    /// archive index as `source_index`. `smart` chooses the Bandizip-style output
+    /// policy (bundle into a named folder only when the selection has multiple
+    /// top-level roots); otherwise the destination is used verbatim.
+    pub fn with_selection(
+        archive_path: &Path,
+        destination: &Path,
+        entries: &[ArchiveEntry],
+        select: &dyn Fn(&ArchiveEntry) -> bool,
+        smart: bool,
+    ) -> Result<Self> {
+        let chosen: Vec<(usize, ArchiveEntry)> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| select(entry))
+            .map(|(index, entry)| (index, entry.clone()))
+            .collect();
+        if chosen.is_empty() {
+            return Err(ArchiveError::new("没有可提取的条目"));
+        }
+        let validated = validate_entries(&chosen)?;
+        let output_dir = if smart {
+            smart_output_dir(archive_path, destination, &validated)
+        } else {
+            destination.to_path_buf()
+        };
         fs::create_dir_all(&output_dir).map_err(|error| {
             ArchiveError::new(format!(
                 "无法创建输出目录 {}：{error}",
@@ -119,6 +142,15 @@ impl ExtractionPlan {
 
     pub fn entries(&self) -> &[SafeEntry] {
         &self.entries
+    }
+
+    /// Looks up a planned entry by its real archive index. Sequential backends
+    /// (7z/rar/tar) walk every archive header and use this to skip entries that
+    /// were not selected, instead of relying on positional alignment.
+    pub fn entry_at_source(&self, source_index: usize) -> Option<&SafeEntry> {
+        self.entries
+            .iter()
+            .find(|entry| entry.source_index == source_index)
     }
 
     pub fn output_dir(&self) -> &Path {
@@ -175,11 +207,11 @@ impl ExtractionPlan {
     }
 }
 
-fn validate_entries(entries: &[ArchiveEntry]) -> Result<Vec<ValidatedEntry>> {
+fn validate_entries(entries: &[(usize, ArchiveEntry)]) -> Result<Vec<ValidatedEntry>> {
     let mut validated = Vec::with_capacity(entries.len());
     let mut paths: HashMap<String, (EntryKind, String)> = HashMap::new();
 
-    for (index, entry) in entries.iter().enumerate() {
+    for (index, entry) in entries {
         if entry.kind == EntryKind::Symlink || entry.kind == EntryKind::Unsupported {
             return Err(ArchiveError::new(format!(
                 "{} 是链接或特殊条目，M1 拒绝提取",
@@ -198,7 +230,7 @@ fn validate_entries(entries: &[ArchiveEntry]) -> Result<Vec<ValidatedEntry>> {
         } else {
             paths.insert(key, (entry.kind, entry.name.clone()));
         }
-        validated.push((index, relative, entry.name.clone(), entry.size, entry.kind));
+        validated.push((*index, relative, entry.name.clone(), entry.size, entry.kind));
     }
 
     for (_, relative, name, _, kind) in &validated {
@@ -298,10 +330,31 @@ fn smart_output_dir(
     if roots.len() <= 1 {
         return destination.to_path_buf();
     }
-    destination.join(archive_base_name(archive_path))
+    unique_output_dir(&destination.join(archive_base_name(archive_path)))
 }
 
-fn archive_base_name(path: &Path) -> String {
+/// Returns `base` if it is free, otherwise the first `base (n)` that does not
+/// exist yet, so repeated extractions never overwrite a previous result.
+pub fn unique_output_dir(base: &Path) -> PathBuf {
+    if fs::symlink_metadata(base).is_err() {
+        return base.to_path_buf();
+    }
+    let parent = base.parent().unwrap_or_else(|| Path::new(""));
+    let stem = base
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    for n in 2..1000 {
+        let candidate = parent.join(format!("{stem} ({n})"));
+        if fs::symlink_metadata(&candidate).is_err() {
+            return candidate;
+        }
+    }
+    base.to_path_buf()
+}
+
+pub fn archive_base_name(path: &Path) -> String {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let lower = name.to_lowercase();
     if lower.ends_with(".tar.gz") {
@@ -355,4 +408,48 @@ fn create_secure_directories(root: &Path, relative: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_output_dir_deduplicates_existing_names() {
+        let root = std::env::temp_dir().join(format!(
+            "mugenzip-dedup-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let base = root.join("report");
+        assert_eq!(unique_output_dir(&base), base);
+        fs::create_dir(&base).unwrap();
+        assert_eq!(unique_output_dir(&base), root.join("report (2)"));
+        fs::create_dir(root.join("report (2)")).unwrap();
+        assert_eq!(unique_output_dir(&base), root.join("report (3)"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn smart_output_dir_uses_selection_roots() {
+        let archive = Path::new("/tmp/photos.zip");
+        let destination = Path::new("/tmp/out");
+        let single = vec![
+            (0, PathBuf::from("img/a.png"), "img/a.png".into(), 1, EntryKind::File),
+            (1, PathBuf::from("img/b.png"), "img/b.png".into(), 1, EntryKind::File),
+        ];
+        assert_eq!(smart_output_dir(archive, destination, &single), destination);
+        let multiple = vec![
+            (0, PathBuf::from("a.png"), "a.png".into(), 1, EntryKind::File),
+            (1, PathBuf::from("b.png"), "b.png".into(), 1, EntryKind::File),
+        ];
+        assert_eq!(
+            smart_output_dir(archive, destination, &multiple),
+            destination.join("photos")
+        );
+    }
 }

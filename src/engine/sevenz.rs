@@ -52,16 +52,19 @@ impl Archive for SevenZipBackend {
             .collect())
     }
 
-    fn extract(
+    fn extract_entries(
         &mut self,
         destination: &Path,
+        select: &dyn Fn(&ArchiveEntry) -> bool,
+        smart: bool,
         progress: &mut dyn FnMut(ExtractionProgress),
         cancel: &AtomicBool,
     ) -> Result<ExtractReport> {
         let entries = self.list()?;
-        let plan = ExtractionPlan::new(&self.path, destination, &entries)?;
+        let plan = ExtractionPlan::with_selection(&self.path, destination, &entries, select, smart)?;
+        let chosen: Vec<ArchiveEntry> = entries.iter().filter(|entry| select(entry)).cloned().collect();
         let mut reader = self.open()?;
-        let mut state = EntryProgress::new(&entries, progress, cancel)?;
+        let mut state = EntryProgress::new(&chosen, progress, cancel)?;
         let mut failure = None;
         let mut index = 0usize;
 
@@ -72,10 +75,9 @@ impl Archive for SevenZipBackend {
             let current = index;
             index += 1;
             let operation = (|| -> Result<bool> {
-                let safe = plan
-                    .entries()
-                    .get(current)
-                    .ok_or_else(|| ArchiveError::new("7Z 条目顺序在提取过程中发生变化"))?;
+                let Some(safe) = plan.entry_at_source(current) else {
+                    return Ok(true);
+                };
                 if safe.name != entry.name {
                     return Err(ArchiveError::new("7Z 条目顺序与列表不一致，已停止提取"));
                 }

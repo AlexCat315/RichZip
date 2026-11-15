@@ -1,19 +1,21 @@
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use cove_ui::compose::prelude::{TableSort, TextBuffer};
 use cove_ui::compose::primitives::interaction::DroppedFile;
 use cove_ui::composition::DynamicField;
 use cove_ui::core::State;
-use cove_ui::core::scene::{FilePicker, FilePickerFilter, FolderPicker, OpenedDocuments};
+use cove_ui::core::scene::{ClipboardHolder, FilePicker, FilePickerFilter, FolderPicker, OpenedDocuments};
 use cove_ui::core::work;
 use cove_ui::hosts::desktop::application::composition::AppDisplayHandleHolder;
 
 use crate::engine::{
-    self, ArchiveError, ExtractReport, ExtractionProgress, format_size, open_archive,
+    self, ArchiveEntry, ArchiveError, ExtractReport, ExtractionProgress, format_size, open_archive,
 };
 use browser::{ArchiveBrowser, FileItem};
 
@@ -105,7 +107,12 @@ enum TaskEvent {
 pub struct AppModel {
     pub archive: State<Option<Arc<LoadedArchive>>>,
     pub directory: State<String>,
-    pub selection: State<Option<String>>,
+    pub selection: State<BTreeSet<String>>,
+    pub search: State<TextBuffer>,
+    pub table_sort: State<Option<TableSort>>,
+    pub tree_selection: State<Option<String>>,
+    pub sidebar_fraction: State<f32>,
+    pub inspector_visible: State<bool>,
     pub phase: State<Phase>,
     pub progress: State<Progress>,
     pub status: State<Status>,
@@ -119,7 +126,12 @@ impl AppModel {
     pub fn new() -> Self {
         let archive = State::new(None);
         let directory = State::new(String::new());
-        let selection = State::new(None);
+        let selection = State::new(BTreeSet::new());
+        let search = State::new(TextBuffer::empty());
+        let table_sort = State::new(None);
+        let tree_selection = State::new(Some(String::new()));
+        let sidebar_fraction = State::new(0.22);
+        let inspector_visible = State::new(true);
         let phase = State::new(Phase::Idle);
         let progress = State::new(Progress::default());
         let status = State::new(Status::default());
@@ -130,6 +142,7 @@ impl AppModel {
             let archive = archive.clone();
             let directory = directory.clone();
             let selection = selection.clone();
+            let tree_selection = tree_selection.clone();
             let phase = phase.clone();
             let progress = progress.clone();
             let status = status.clone();
@@ -142,6 +155,7 @@ impl AppModel {
                     &archive,
                     &directory,
                     &selection,
+                    &tree_selection,
                     &phase,
                     &progress,
                     &status,
@@ -155,6 +169,11 @@ impl AppModel {
             archive,
             directory,
             selection,
+            search,
+            table_sort,
+            tree_selection,
+            sidebar_fraction,
+            inspector_visible,
             phase,
             progress,
             status,
@@ -172,6 +191,11 @@ impl AppModel {
             DynamicField::state("archive", &self.archive),
             DynamicField::state("directory", &self.directory),
             DynamicField::state("selection", &self.selection),
+            DynamicField::state("search", &self.search),
+            DynamicField::state("tableSort", &self.table_sort),
+            DynamicField::state("treeSelection", &self.tree_selection),
+            DynamicField::state("sidebarFraction", &self.sidebar_fraction),
+            DynamicField::state("inspectorVisible", &self.inspector_visible),
             DynamicField::state("phase", &self.phase),
             DynamicField::state("progress", &self.progress),
             DynamicField::state("status", &self.status),
@@ -245,25 +269,6 @@ impl AppModel {
         }));
     }
 
-    pub fn extract_dialog(&self) {
-        if self.is_busy() {
-            return;
-        }
-        let Some(archive) = self.archive.get() else {
-            return;
-        };
-        let default_path = archive
-            .path
-            .parent()
-            .map(|parent| parent.to_string_lossy().into_owned());
-        let model = self.clone();
-        FolderPicker::request(default_path.as_deref(), Box::new(move |chosen| {
-            if let Some(directory) = chosen {
-                model.extract(PathBuf::from(directory));
-            }
-        }));
-    }
-
     /// Takes the first archive among the dropped files, ignoring the rest.
     pub fn open_dropped(&self, files: Vec<DroppedFile>) {
         if let Some(file) = files.into_iter().find(|file| !file.is_directory) {
@@ -275,16 +280,35 @@ impl AppModel {
         !matches!(self.phase.get(), Phase::Idle | Phase::Ready)
     }
 
-    pub fn rows(&self) -> Vec<FileItem> {
+    /// The current directory's entries, before the search filter is applied.
+    pub fn current_items(&self) -> Vec<FileItem> {
         match self.archive.get() {
             Some(archive) => archive.browser.items(&self.directory.get()),
             None => Vec::new(),
         }
     }
 
-    pub fn selected_item(&self) -> Option<FileItem> {
-        let id = self.selection.get()?;
-        self.rows().into_iter().find(|item| item.id == id)
+    /// The rows the table shows: the current directory narrowed by the search
+    /// query. Column sorting is handled by the table itself.
+    pub fn rows(&self) -> Vec<FileItem> {
+        let query = self.search.get().string_value().to_lowercase();
+        let items = self.current_items();
+        if query.is_empty() {
+            return items;
+        }
+        items
+            .into_iter()
+            .filter(|item| item.name.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    /// The selected entries in the current directory, for the inspector.
+    pub fn selected_items(&self) -> Vec<FileItem> {
+        let selection = self.selection.get();
+        self.current_items()
+            .into_iter()
+            .filter(|item| selection.contains(&item.id))
+            .collect()
     }
 
     /// Starts a new generation, cancelling nothing that is already running: the
@@ -304,7 +328,9 @@ impl AppModel {
         let (generation, _cancel) = self.begin_task();
         self.archive.set(None);
         self.directory.set(String::new());
-        self.selection.set(None);
+        self.selection.set(BTreeSet::new());
+        self.search.set(TextBuffer::empty());
+        self.tree_selection.set(Some(String::new()));
         self.phase.set(Phase::Loading);
         self.drop_targeted.set(false);
         self.status.set(Status {
@@ -320,7 +346,82 @@ impl AppModel {
         });
     }
 
-    pub fn extract(&self, destination: PathBuf) {
+    fn archive_parent(&self) -> Option<PathBuf> {
+        self.archive
+            .get()?
+            .path
+            .parent()
+            .map(|parent| parent.to_path_buf())
+    }
+
+    /// Smart extraction: the engine bundles the selection into a named folder
+    /// only when it spans multiple top-level roots, otherwise extracts in place.
+    pub fn extract_smart(&self) {
+        if let Some(parent) = self.archive_parent() {
+            self.run_extract(parent, true);
+        }
+    }
+
+    /// Extracts the selection straight into the archive's folder.
+    pub fn extract_here(&self) {
+        if let Some(parent) = self.archive_parent() {
+            self.run_extract(parent, false);
+        }
+    }
+
+    /// Extracts the selection into a fresh folder named after the archive,
+    /// deduplicated against existing folders.
+    pub fn extract_named(&self) {
+        let Some(archive) = self.archive.get() else {
+            return;
+        };
+        let Some(parent) = archive.path.parent().map(|parent| parent.to_path_buf()) else {
+            return;
+        };
+        let base = engine::archive_base_name(&archive.path);
+        let destination = engine::unique_output_dir(&parent.join(base));
+        self.run_extract(destination, false);
+    }
+
+    /// Lets the user pick a destination folder, then extracts smartly into it.
+    pub fn extract_dialog(&self) {
+        if self.is_busy() {
+            return;
+        }
+        let Some(archive) = self.archive.get() else {
+            return;
+        };
+        let default_path = archive
+            .path
+            .parent()
+            .map(|parent| parent.to_string_lossy().into_owned());
+        let model = self.clone();
+        FolderPicker::request(default_path.as_deref(), Box::new(move |chosen| {
+            if let Some(directory) = chosen {
+                model.run_extract(PathBuf::from(directory), true);
+            }
+        }));
+    }
+
+    /// Context-menu extraction of a single entry (and its subtree).
+    pub fn extract_item_smart(&self, id: String) {
+        if let Some(parent) = self.archive_parent() {
+            self.run_extract_with(parent, true, BTreeSet::from([id]));
+        }
+    }
+
+    pub fn extract_item_here(&self, id: String) {
+        if let Some(parent) = self.archive_parent() {
+            self.run_extract_with(parent, false, BTreeSet::from([id]));
+        }
+    }
+
+    fn run_extract(&self, destination: PathBuf, smart: bool) {
+        let selected = self.selection.get();
+        self.run_extract_with(destination, smart, selected);
+    }
+
+    fn run_extract_with(&self, destination: PathBuf, smart: bool, selected: BTreeSet<String>) {
         if self.is_busy() {
             return;
         }
@@ -343,10 +444,13 @@ impl AppModel {
         let sender = self.sender.clone();
         let source = archive.path.clone();
         std::thread::spawn(move || {
+            let predicate = selection_filter(selected);
             let mut throttle = Throttle::new();
             let result = open_archive(&source).and_then(|mut archive| {
-                archive.extract(
+                archive.extract_entries(
                     &destination,
+                    &predicate,
+                    smart,
                     &mut |progress| {
                         if throttle.should_send(&progress) {
                             sender.send(TaskEvent::Progress {
@@ -380,8 +484,9 @@ impl AppModel {
         if !archive.browser.contains_directory(&directory) {
             return;
         }
-        self.directory.set(directory);
-        self.selection.set(None);
+        self.directory.set(directory.clone());
+        self.tree_selection.set(Some(directory));
+        self.selection.set(BTreeSet::new());
     }
 
     pub fn navigate_up(&self) {
@@ -392,7 +497,47 @@ impl AppModel {
     pub fn activate(&self, item: &FileItem) {
         if item.folder {
             self.enter_directory(item.id.clone());
+        } else {
+            self.show_properties(item.id.clone());
         }
+    }
+
+    pub fn select_all(&self) {
+        let ids: BTreeSet<String> = self.current_items().into_iter().map(|item| item.id).collect();
+        self.selection.set(ids);
+    }
+
+    pub fn show_properties(&self, id: String) {
+        self.selection.set(BTreeSet::from([id]));
+        self.inspector_visible.set(true);
+    }
+
+    pub fn copy_path(&self, id: String) {
+        ClipboardHolder::write(&id);
+        self.status.set(Status {
+            text: "已复制路径".into(),
+            detail: id,
+            tone: Tone::Ok,
+        });
+    }
+
+    pub fn toggle_inspector(&self) {
+        let visible = self.inspector_visible.get();
+        self.inspector_visible.set(!visible);
+    }
+}
+
+/// Builds the engine predicate for a selection. An empty selection means "the
+/// whole archive"; otherwise an entry matches when it is selected or lives
+/// under a selected folder.
+fn selection_filter(selected: BTreeSet<String>) -> impl Fn(&ArchiveEntry) -> bool {
+    let prefixes: Vec<String> = selected.iter().map(|id| format!("{id}/")).collect();
+    move |entry| {
+        if selected.is_empty() {
+            return true;
+        }
+        let path = browser::normalize_path(&entry.name);
+        selected.contains(&path) || prefixes.iter().any(|prefix| path.starts_with(prefix))
     }
 }
 
@@ -430,7 +575,8 @@ fn apply_event(
     task: &Rc<RefCell<TaskSlot>>,
     archive: &State<Option<Arc<LoadedArchive>>>,
     directory: &State<String>,
-    selection: &State<Option<String>>,
+    selection: &State<BTreeSet<String>>,
+    tree_selection: &State<Option<String>>,
     phase: &State<Phase>,
     progress: &State<Progress>,
     status: &State<Status>,
@@ -454,14 +600,9 @@ fn apply_event(
                         loaded.entry_count,
                         format_size(loaded.total_bytes)
                     );
-                    let first = loaded
-                        .browser
-                        .items("")
-                        .into_iter()
-                        .find(|item| !item.folder)
-                        .map(|item| item.id);
                     directory.set(String::new());
-                    selection.set(first);
+                    selection.set(BTreeSet::new());
+                    tree_selection.set(Some(String::new()));
                     set_window_title(&loaded.name);
                     archive.set(Some(Arc::new(loaded)));
                     phase.set(Phase::Ready);

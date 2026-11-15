@@ -80,23 +80,27 @@ impl Archive for RarBackend {
         Ok(entries)
     }
 
-    fn extract(
+    fn extract_entries(
         &mut self,
         destination: &Path,
+        select: &dyn Fn(&ArchiveEntry) -> bool,
+        smart: bool,
         progress: &mut dyn FnMut(ExtractionProgress),
         cancel: &AtomicBool,
     ) -> Result<ExtractReport> {
         let entries = self.list()?;
-        let plan = ExtractionPlan::new(&self.path, destination, &entries)?;
+        let plan = ExtractionPlan::with_selection(&self.path, destination, &entries, select, smart)?;
+        let chosen: Vec<ArchiveEntry> = entries.iter().filter(|entry| select(entry)).cloned().collect();
         let raw = RawRar::open(&self.path)?;
-        let mut state = EntryProgress::new(&entries, progress, cancel)?;
+        let mut state = EntryProgress::new(&chosen, progress, cancel)?;
         let mut index = 0usize;
 
         while let Some(header) = raw.read_header()? {
-            let safe = plan
-                .entries()
-                .get(index)
-                .ok_or_else(|| ArchiveError::new("RAR 条目数量在提取过程中发生变化"))?;
+            let Some(safe) = plan.entry_at_source(index) else {
+                raw.process(sys::RAR_SKIP)?;
+                index += 1;
+                continue;
+            };
             if safe.name != header.name {
                 return Err(ArchiveError::new(format!(
                     "RAR 条目顺序与列表不一致：{}",
@@ -137,7 +141,7 @@ impl Archive for RarBackend {
             index += 1;
         }
 
-        if index != plan.entries().len() {
+        if index != entries.len() {
             return Err(ArchiveError::new("RAR 条目提前结束，压缩包可能已损坏"));
         }
         Ok(ExtractReport {

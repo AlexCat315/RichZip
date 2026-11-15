@@ -72,6 +72,28 @@ impl ArchiveBrowser {
         self.children.get(directory).cloned().unwrap_or_default()
     }
 
+    /// The synthetic root of the folder tree: the archive itself.
+    pub fn archive_root_item(&self) -> FileItem {
+        FileItem {
+            id: String::new(),
+            name: self.archive_name.clone(),
+            ext: String::new(),
+            size: "—".to_owned(),
+            modified: "—".to_owned(),
+            path: self.archive_name.clone(),
+            folder: true,
+            bytes: 0,
+        }
+    }
+
+    /// Only the child folders of a directory, for the navigation tree.
+    pub fn subfolders(&self, directory: &str) -> Vec<FileItem> {
+        self.items(directory)
+            .into_iter()
+            .filter(|item| item.folder)
+            .collect()
+    }
+
     pub fn breadcrumbs(&self, directory: &str) -> Vec<BreadcrumbItem> {
         let mut breadcrumbs = vec![BreadcrumbItem {
             name: self.archive_name.clone(),
@@ -159,7 +181,7 @@ pub fn parent_directory(directory: &str) -> String {
         .to_owned()
 }
 
-fn normalize_path(path: &str) -> String {
+pub fn normalize_path(path: &str) -> String {
     path.replace('\\', "/")
         .split('/')
         .filter(|component| !component.is_empty() && *component != ".")

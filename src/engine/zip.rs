@@ -69,16 +69,19 @@ impl Archive for ZipBackend {
         Ok(entries)
     }
 
-    fn extract(
+    fn extract_entries(
         &mut self,
         destination: &Path,
+        select: &dyn Fn(&ArchiveEntry) -> bool,
+        smart: bool,
         progress: &mut dyn FnMut(ExtractionProgress),
         cancel: &AtomicBool,
     ) -> Result<ExtractReport> {
         let entries = self.list()?;
-        let plan = ExtractionPlan::new(&self.path, destination, &entries)?;
+        let plan = ExtractionPlan::with_selection(&self.path, destination, &entries, select, smart)?;
+        let chosen: Vec<ArchiveEntry> = entries.iter().filter(|entry| select(entry)).cloned().collect();
         let mut archive = self.open()?;
-        let mut state = EntryProgress::new(&entries, progress, cancel)?;
+        let mut state = EntryProgress::new(&chosen, progress, cancel)?;
 
         for safe in plan.entries() {
             if safe.kind == EntryKind::Directory {
@@ -109,5 +112,102 @@ impl Archive for ZipBackend {
             output_dir: plan.output_dir().to_path_buf(),
             completed: state.completed(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::atomic::AtomicBool;
+    use zip::CompressionMethod;
+    use zip::write::SimpleFileOptions;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mugenzip-test-{tag}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_zip(path: &Path, files: &[(&str, &[u8])]) {
+        let file = File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        for (name, bytes) in files {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn extracts_only_selected_entries() {
+        let root = temp_dir("subset");
+        let archive_path = root.join("sample.zip");
+        write_zip(
+            &archive_path,
+            &[
+                ("alpha.txt", b"aaaaa"),
+                ("beta.txt", b"bbbbbb"),
+                ("gamma.txt", b"ccccccc"),
+            ],
+        );
+        let destination = root.join("out");
+        let cancel = AtomicBool::new(false);
+        let report = ZipBackend::new(&archive_path)
+            .extract_entries(
+                &destination,
+                &|entry| entry.name != "beta.txt",
+                false,
+                &mut |_| {},
+                &cancel,
+            )
+            .unwrap();
+        assert_eq!(report.completed, 2);
+        assert!(destination.join("alpha.txt").is_file());
+        assert!(destination.join("gamma.txt").is_file());
+        assert!(!destination.join("beta.txt").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn smart_bundles_multiple_roots_into_named_folder() {
+        let root = temp_dir("smart");
+        let archive_path = root.join("bundle.zip");
+        write_zip(
+            &archive_path,
+            &[("docs/readme.txt", b"r"), ("src/main.rs", b"m")],
+        );
+        let destination = root.join("out");
+        let cancel = AtomicBool::new(false);
+        let report = ZipBackend::new(&archive_path)
+            .extract_entries(&destination, &|_| true, true, &mut |_| {}, &cancel)
+            .unwrap();
+        assert_eq!(report.output_dir, destination.join("bundle").canonicalize().unwrap());
+        assert!(destination.join("bundle/docs/readme.txt").is_file());
+        assert!(destination.join("bundle/src/main.rs").is_file());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn smart_single_root_extracts_in_place() {
+        let root = temp_dir("single");
+        let archive_path = root.join("flat.zip");
+        write_zip(&archive_path, &[("only.txt", b"x")]);
+        let destination = root.join("out");
+        let cancel = AtomicBool::new(false);
+        let report = ZipBackend::new(&archive_path)
+            .extract_entries(&destination, &|_| true, true, &mut |_| {}, &cancel)
+            .unwrap();
+        assert_eq!(report.output_dir, destination.canonicalize().unwrap());
+        assert!(destination.join("only.txt").is_file());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
