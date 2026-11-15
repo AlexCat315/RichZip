@@ -90,14 +90,25 @@ fn workspace(model: Rc<AppModel>, safe_top: f32) -> AnyView {
     // window's own material is what you see behind it; the content sits on one
     // floating card. The split's divider lane is invisible — the card's edge
     // does the separating — but it still drags the fraction.
+    // Padding has to live on a container node: put it on the card itself and
+    // the fill swallows its own margin, leaving the card flush to the edge.
     let card = AnyView::new(
-        AnyView::new(content(model.clone(), safe_top))
-            .padding_insets(EdgeInsets::new(8.0, 0.0, 8.0, 8.0)),
-    )
-    .semantic_background(SemanticColorRef::background())
-    .corner_radius(14.0)
-    .semantic_border(SemanticColorRef::border(), 0.5)
-    .clipped();
+        AnyView::new(
+            Column::new(
+                HorizontalAlignment::Leading,
+                0.0,
+                AnyView::new(views![AnyView::new(content(model.clone(), safe_top))
+                    .semantic_background(SemanticColorRef::background())
+                    .corner_radius(14.0)
+                    .semantic_border(SemanticColorRef::border(), 0.5)
+                    .clipped()
+                    .fill_width()
+                    .fill_height()]),
+            )
+            .fill(),
+        )
+        .padding_insets(EdgeInsets::all(8.0)),
+    );
 
     AnyView::new(
         SplitView::resizable(
@@ -425,7 +436,7 @@ fn toolbar(model: Rc<AppModel>, safe_top: f32) -> AnyView {
     // Reference language: a back chevron, the archive's name, then the tools
     // the window offers — glyph over a small label, no bar behind them.
     let back = model.clone();
-    let back_button = AnyView::new(
+    let back_button = if loaded { AnyView::new(
         Button::new(
             AnyView::new(ButtonIcon::new(
                 ButtonIconSource::resource(navigation::chevron_left()),
@@ -440,7 +451,9 @@ fn toolbar(model: Rc<AppModel>, safe_top: f32) -> AnyView {
         .tooltip("上一级")
         .button_style(PlainButtonStyle)
         .control_size(ControlSize::Small),
-    );
+    ) } else {
+        AnyView::new(AnyView::new(EmptyView).frame_width(24.0))
+    };
 
     let title_block: AnyView = match &archive {
         Some(archive) => AnyView::new(
