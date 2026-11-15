@@ -1,4 +1,9 @@
+//! A Mac-native archive workspace: an outline sidebar for structure, one
+//! file list for content, and a single footer that states where the contents
+//! are about to land.
+
 use std::cmp::Ordering;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -7,17 +12,28 @@ use cove_ui::compose::modifiers::style::AppearanceExt;
 use cove_ui::compose::prelude::*;
 use cove_ui::compose::primitives::data::lists::tree::TreeOptions;
 use cove_ui::compose::primitives::data::table::{ColumnVisibility, ComparisonResult};
-use cove_ui::compose::primitives::media::ui_icon_catalog::{action, file, layout, media, navigation, status};
-use cove_ui::compose::theme::styles::buttons::{
-    ButtonStyleViewExt, GhostButtonStyle, PrimaryButtonStyle,
+use cove_ui::compose::primitives::media::ui_icon_catalog::{
+    action, data, file, media, navigation, status,
 };
+use cove_ui::compose::theme::styles::buttons::{
+    ButtonStyleViewExt, GhostButtonStyle, PlainButtonStyle, PrimaryButtonStyle,
+};
+use cove_ui::compose::theme::ThemeViewExt;
 use cove_ui::composition::{
     DynamicField, EmptyView, HorizontalAlignment, Spacer, VerticalAlignment, views,
 };
+use cove_ui::core::Color;
 
 use super::browser::FileItem;
-use super::model::{AppModel, ARCHIVE_EXTENSIONS, LoadedArchive, Phase, Tone};
-use crate::engine::{archive_base_name, format_size};
+use super::model::{AppModel, ARCHIVE_EXTENSIONS, LoadedArchive, Phase, Tone, file_name};
+use super::theme;
+use crate::engine::format_size;
+
+const TOP_BAR: f32 = 54.0;
+const SIDEBAR_WIDTH: f32 = 208.0;
+const PATH_BAR: f32 = 40.0;
+const FOOTER: f32 = 64.0;
+const GUTTER: f32 = 16.0;
 
 pub struct RootView {
     pub model: Rc<AppModel>,
@@ -28,34 +44,43 @@ impl View for RootView {
         self.model.ensure_platform_hooks();
         let model = self.model.clone();
 
-        let main = match (model.archive.get(), model.phase.get()) {
-            (None, Phase::Loading) => loading_view(),
-            (None, _) => empty_view(model.clone()),
-            (Some(archive), _) => workspace_view(model.clone(), archive),
+        let main: AnyView = match (model.archive.get(), model.phase.get()) {
+            (None, Phase::Loading) => reading(),
+            (None, _) => idle(model.clone()),
+            (Some(archive), _) => workspace(model.clone(), archive),
+        };
+
+        let footer: AnyView = if model.archive.get().is_some() {
+            action_bar(model.clone())
+        } else {
+            AnyView::new(EmptyView)
         };
 
         let shell = Column::new(
             HorizontalAlignment::Leading,
             0.0,
             AnyView::new(views!(
-                toolbar(model.clone()),
-                nav_bar(model.clone()),
+                top_bar(model.clone()),
+                Divider::horizontal(),
                 main.flex(1.0),
-                extraction_bar(model.clone()),
-                status_bar(model.clone()),
+                footer,
             )),
         )
         .fill()
-        .semantic_background(SemanticColorRef::background());
+        .semantic_background(SemanticColorRef::background())
+        .theme(theme::paper());
 
         let drop = model.clone();
+        let targeted = model.clone();
         AnyView::new(
             FileDropZone::new(move |files| drop.open_dropped(files), shell)
                 .accepted_extensions(ARCHIVE_EXTENSIONS)
                 .maximum_files(1)
                 .shows_chrome(false)
                 .is_targeted(model.drop_targeted.binding())
-                .fill(),
+                .on_targeted(move |is_targeted| targeted.drop_targeted.set(is_targeted))
+                .fill()
+                .theme(theme::paper()),
         )
     }
 
@@ -64,170 +89,212 @@ impl View for RootView {
     }
 }
 
-fn toolbar(model: Rc<AppModel>) -> AnyView {
-    let busy = model.is_busy();
-    let loaded = model.archive.get().is_some();
+// ---------------------------------------------------------------------------
+// top bar
+// ---------------------------------------------------------------------------
 
-    let open = model.clone();
-    let open_button = labelled_button(file::archive(), "打开", move || open.open_dialog())
-        .enabled(!busy);
+fn top_bar(model: Rc<AppModel>) -> AnyView {
+    let archive = model.archive.get();
+    let loaded = archive.is_some();
 
-    let smart = model.clone();
-    let extract = SplitButton::new("智能解压", extract_menu(model.clone()), move || {
-        smart.extract_smart()
-    })
-    .enabled(!busy && loaded)
-    .menu_accessibility_label("解压选项");
-
-    let search = SearchField::new(model.search.binding())
-        .placeholder("搜索当前目录")
-        .frame_width(220.0);
-
-    AnyView::new(
-        Toolbar::new(Row::new(
+    let identity: AnyView = match &archive {
+        Some(archive) => AnyView::new(Row::new(
             VerticalAlignment::Center,
             10.0,
             AnyView::new(views!(
-                ToolbarGroup::new(open_button),
-                ToolbarSeparator,
-                ToolbarGroup::new(extract).bordered(true),
-                Spacer::new(0.0),
-                search,
+                tile(file::package(), 30.0, SemanticColorRef::accent_muted(), SemanticColorRef::accent()),
+                Column::new(
+                    HorizontalAlignment::Leading,
+                    1.0,
+                    AnyView::new(views!(
+                        Text::new(archive.name.clone())
+                            .line_limit(Some(1))
+                            .truncating_tail()
+                            .semantic_font(SemanticFontRef::headline())
+                            .semantic_foreground(SemanticColorRef::on_surface()),
+                        Text::new(archive.meta_line())
+                            .semantic_font(SemanticFontRef::caption())
+                            .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                    )),
+                )
+                .frame_min_width(0.0),
             )),
-        ))
-        .minimum_height(52.0)
-        .vertical_padding(8.0)
-        .fill_width()
-        .semantic_background(SemanticColorRef::surface()),
-    )
-}
-
-fn extract_menu(model: Rc<AppModel>) -> Vec<MenuEntry> {
-    let named_label = match model.archive.get() {
-        Some(archive) => format!("解压到「{}」", archive_base_name(&archive.path)),
-        None => "解压到名称文件夹".into(),
+        )
+        .frame_min_width(0.0)),
+        None => AnyView::new(Row::new(
+            VerticalAlignment::Center,
+            10.0,
+            AnyView::new(views!(
+                tile(file::package(), 30.0, SemanticColorRef::accent_muted(), SemanticColorRef::accent()),
+                Text::new("MugenZip")
+                    .semantic_font(SemanticFontRef::headline())
+                    .semantic_foreground(SemanticColorRef::on_surface()),
+            )),
+        )),
     };
-    let smart = model.clone();
-    let here = model.clone();
-    let named = model.clone();
-    let dialog = model.clone();
-    vec![
-        MenuEntry::Item(MenuItem::new(1, "智能解压", move || smart.extract_smart())),
-        MenuEntry::Item(MenuItem::new(2, "解压到当前文件夹", move || here.extract_here())),
-        MenuEntry::Item(MenuItem::new(3, named_label, move || named.extract_named())),
-        MenuEntry::separator(4),
-        MenuEntry::Item(MenuItem::new(5, "解压到…", move || dialog.extract_dialog())),
-    ]
-}
 
-fn nav_bar(model: Rc<AppModel>) -> AnyView {
-    let directory = model.directory.get();
-    let loaded = model.archive.get().is_some();
+    let open = model.clone();
+    let open_action = toolbar_action(file::archive(), "打开", true, move || open.open_dialog());
+
+    let extract = model.clone();
+    let extract_action = toolbar_action(action::download(), "解压", loaded && !model.is_busy(), move || {
+        extract.extract()
+    });
 
     let up = model.clone();
-    let up_button = Button::icon_default(
-        ButtonIconSource::resource(navigation::arrow_up()),
+    let up_action = toolbar_action(
+        navigation::arrow_up(),
+        "上级",
+        loaded && !model.directory.get().is_empty() && !model.is_busy(),
         move || up.navigate_up(),
-    )
-    .enabled(loaded && !directory.is_empty())
-    .accessibility_text("上一级")
-    .tooltip("上一级")
-    .button_style(GhostButtonStyle);
+    );
 
-    let breadcrumb: AnyView = match model.archive.get() {
-        Some(archive) => {
-            let crumbs = archive.browser.breadcrumbs(&directory);
-            let items = crumbs
-                .iter()
-                .map(|crumb| BreadcrumbItem::new(crumb.path.clone(), crumb.name.clone()))
-                .collect();
-            let select = model.clone();
-            AnyView::new(
-                Breadcrumb::try_new(items, 6, move |path| select.enter_directory(path))
-                    .expect("breadcrumb paths are unique by construction"),
-            )
-        }
-        None => AnyView::new(
-            Text::new("未打开压缩包")
-                .semantic_font(SemanticFontRef::body())
-                .semantic_foreground(SemanticColorRef::on_surface_muted()),
-        ),
+    let more = more_menu(model.clone());
+
+    let search: AnyView = if loaded {
+        AnyView::new(
+            SearchField::new(model.search.binding())
+                .placeholder("搜索")
+                .frame_width(170.0)
+                .control_size(ControlSize::Small),
+        )
+    } else {
+        AnyView::new(EmptyView)
     };
-
-    let toggle = model.clone();
-    let inspector_visible = model.inspector_visible.get();
-    let inspector_button = Button::icon_default(
-        ButtonIconSource::resource(layout::panel_right()),
-        move || toggle.toggle_inspector(),
-    )
-    .enabled(loaded)
-    .accessibility_text("显示或隐藏简介")
-    .tooltip(if inspector_visible { "隐藏简介" } else { "显示简介" })
-    .button_style(GhostButtonStyle);
 
     AnyView::new(
         Row::new(
             VerticalAlignment::Center,
-            6.0,
+            10.0,
             AnyView::new(views!(
-                up_button,
-                breadcrumb,
+                identity,
                 Spacer::new(0.0),
-                inspector_button,
+                open_action,
+                extract_action,
+                up_action,
+                ToolbarSeparator,
+                search,
+                more,
             )),
         )
+        .padding_insets(EdgeInsets::new(6.0, GUTTER, 6.0, GUTTER))
+        .frame_height(TOP_BAR)
         .fill_width()
-        .padding_insets(EdgeInsets::new(6.0, 12.0, 6.0, 12.0)),
+        .semantic_background(SemanticColorRef::background()),
     )
 }
 
-fn workspace_view(model: Rc<AppModel>, archive: Arc<LoadedArchive>) -> AnyView {
-    let sidebar = sidebar_tree(model.clone(), archive);
-    let table = file_table(model.clone());
-    let content = if model.inspector_visible.get() {
-        let inspector = inspector_pane(model.clone());
-        AnyView::new(SplitView::new(SplitAxis::Horizontal, 0.72, table, inspector))
-    } else {
-        AnyView::new(table)
-    };
+/// The mockup's toolbar language: glyph over a small label, no chrome until
+/// the pointer arrives.
+fn toolbar_action(
+    glyph: cove_ui::imaging::BundleImageResource,
+    title: &'static str,
+    enabled: bool,
+    action: impl Fn() + 'static,
+) -> AnyView {
     AnyView::new(
-        SplitView::resizable(
-            SplitAxis::Horizontal,
-            model.sidebar_fraction.binding(),
-            sidebar,
-            content,
+        Button::new(
+            Column::new(
+                HorizontalAlignment::Center,
+                2.0,
+                AnyView::new(views!(
+                    AnyView::new(ButtonIcon::new(
+                        ButtonIconSource::resource(glyph),
+                        Some(17.0),
+                        None,
+                    ))
+                    .semantic_foreground(SemanticColorRef::on_surface_variant()),
+                    Text::new(title)
+                        .semantic_font(SemanticFontRef::caption())
+                        .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                )),
+            ),
+            action,
         )
-        .constraints(SplitConstraints::new(0.15, 0.40).minimums(180.0, 480.0))
-        .flex(1.0)
-        .fill_width(),
+        .enabled(enabled)
+        .accessibility_text(title)
+        .tooltip(title)
+        .button_style(GhostButtonStyle)
+        .control_size(ControlSize::Large),
     )
 }
 
-fn sidebar_tree(model: Rc<AppModel>, archive: Arc<LoadedArchive>) -> AnyView {
+fn more_menu(model: Rc<AppModel>) -> AnyView {
+    let dialog = model.clone();
+    let named = model.clone();
+    let copy = model.clone();
+    let entries = vec![
+        MenuEntry::Item(MenuItem::new(
+            1,
+            "解压到…",
+            move || dialog.choose_destination(),
+        )),
+        MenuEntry::Item(MenuItem::new(2, "打开压缩包…", move || named.open_dialog())),
+        MenuEntry::separator(3),
+        MenuEntry::Item(MenuItem::new(4, "复制当前路径", move || {
+            copy.copy_path(copy.directory.get())
+        })),
+    ];
+    AnyView::new(
+        MenuButton::new(
+            entries,
+            AnyView::new(
+                ButtonIcon::new(ButtonIconSource::resource(action::more_horizontal()), Some(17.0), None)
+                    .semantic_foreground(SemanticColorRef::on_surface_variant()),
+            ),
+        )
+        .ghost()
+        .accessibility_label("更多操作")
+        .tooltip("更多操作"),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// workspace
+// ---------------------------------------------------------------------------
+
+fn workspace(model: Rc<AppModel>, archive: Arc<LoadedArchive>) -> AnyView {
+    AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            0.0,
+            AnyView::new(views!(
+                sidebar(model.clone(), archive),
+                Divider::vertical(),
+                content(model.clone()),
+            )),
+        )
+        .fill(),
+    )
+}
+
+fn sidebar(model: Rc<AppModel>, archive: Arc<LoadedArchive>) -> AnyView {
     let roots = vec![archive.browser.archive_root_item()];
     let children_archive = archive.clone();
     let nav = model.clone();
 
     let mut options = TreeOptions::<FileItem, String>::default();
-    options.selection.ids = Selection::single(model.tree_selection.binding());
+    // No selection band in the outline: the current folder is marked by ink,
+    // the way Finder's sidebar does it.
+    let _ = &options.selection;
     options.expansion.default_expand_all = true;
     options.expansion.auto_expand_parent = true;
     options.layout.row_height = 28.0;
     options.layout.indentation = 14.0;
-    options.layout.leading_padding = 8.0;
+    options.layout.leading_padding = 10.0;
     options.slots.icon = Some(Rc::new(|item: &FileItem| {
-        let glyph = if item.id.is_empty() {
-            file::archive()
+        let (glyph, tint) = if item.id.is_empty() {
+            (file::archive(), SemanticColorRef::accent())
         } else {
-            file::folder()
+            (file::folder(), SemanticColorRef::on_surface_variant())
         };
         AnyView::new(
             AnyView::new(ButtonIcon::new(
                 ButtonIconSource::resource(glyph),
-                Some(15.0),
+                Some(14.0),
                 None,
             ))
-            .semantic_foreground(SemanticColorRef::accent()),
+            .semantic_foreground(tint),
         )
     }));
     options.events.on_select = Some(Rc::new(move |item: FileItem| nav.enter_directory(item.id)));
@@ -236,36 +303,153 @@ fn sidebar_tree(model: Rc<AppModel>, archive: Arc<LoadedArchive>) -> AnyView {
         roots,
         |item: &FileItem| item.id.clone(),
         move |item: &FileItem| children_archive.browser.subfolders(&item.id),
-        |item: &FileItem, _state| {
-            AnyView::new(
-                Text::new(item.name.clone())
-                    .truncating_tail()
-                    .semantic_font(SemanticFontRef::body())
-                    .semantic_foreground(SemanticColorRef::on_surface()),
-            )
+        {
+            let current = model.clone();
+            move |item: &FileItem, _state| {
+                let is_here = current.directory.get() == item.id;
+                AnyView::new(
+                    Text::new(item.name.clone())
+                        .truncating_tail()
+                        .semantic_font(if is_here {
+                            SemanticFontRef::body_strong()
+                        } else {
+                            SemanticFontRef::body()
+                        })
+                        .semantic_foreground(if is_here {
+                            SemanticColorRef::accent()
+                        } else {
+                            SemanticColorRef::on_surface()
+                        }),
+                )
+            }
         },
     )
     .options(options);
 
+    let stats = Column::new(
+        HorizontalAlignment::Leading,
+        2.0,
+        AnyView::new(views!(
+            Text::new(format!("{} 个项目", archive.entry_count))
+                .semantic_font(SemanticFontRef::caption())
+                .semantic_foreground(SemanticColorRef::on_surface_variant()),
+            Text::new(format_size(archive.total_bytes))
+                .semantic_font(SemanticFontRef::caption())
+                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+        )),
+    )
+    .padding_insets(EdgeInsets::new(12.0, 16.0, 12.0, 16.0))
+    .fill_width();
+
     AnyView::new(
-        Column::new(HorizontalAlignment::Leading, 0.0, AnyView::new(tree.flex(1.0)))
-            .fill_height()
-            .semantic_background(SemanticColorRef::surface_variant()),
+        Column::new(
+            HorizontalAlignment::Leading,
+            0.0,
+            AnyView::new(views!(
+                Text::new("目录")
+                    .semantic_font(SemanticFontRef::caption())
+                    .semantic_foreground(SemanticColorRef::on_surface_muted())
+                    .padding_insets(EdgeInsets::new(14.0, 16.0, 4.0, 16.0)),
+                AnyView::new(tree.flex(1.0)),
+                Divider::horizontal(),
+                stats,
+            )),
+        )
+        .frame_width(SIDEBAR_WIDTH)
+        .fill_height()
+        .semantic_background(SemanticColorRef::surface_variant()),
+    )
+}
+
+fn content(model: Rc<AppModel>) -> AnyView {
+    AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            0.0,
+            AnyView::new(views!(
+                path_bar(model.clone()),
+                list_area(model.clone()),
+            )),
+        )
+        .flex(1.0)
+        .fill_height(),
+    )
+}
+
+fn path_bar(model: Rc<AppModel>) -> AnyView {
+    let directory = model.directory.get();
+    let crumbs = model
+        .archive
+        .get()
+        .map(|archive| archive.browser.breadcrumbs(&directory))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|crumb| BreadcrumbItem::new(crumb.path, crumb.name))
+        .collect();
+    let select = model.clone();
+    let breadcrumb: AnyView = Breadcrumb::try_new(crumbs, 5, move |path| select.enter_directory(path))
+        .map(AnyView::new)
+        .unwrap_or_else(|_| AnyView::new(EmptyView));
+
+    let selected = model.selection.get().len();
+    let summary = if selected > 0 {
+        let (count, bytes) = model.selection_scope();
+        format!("已选 {selected} 项 · {} · {count} 条目", format_size(bytes))
+    } else {
+        let items = model.current_items();
+        let folders = items.iter().filter(|item| item.folder).count();
+        let files = items.len() - folders;
+        format!("{folders} 个文件夹 · {files} 个文件")
+    };
+
+    AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            8.0,
+            AnyView::new(views!(
+                AnyView::new(breadcrumb).frame_min_width(0.0).flex(1.0),
+                Text::new(summary)
+                    .semantic_font(SemanticFontRef::caption())
+                    .semantic_foreground(SemanticColorRef::on_surface_muted()),
+            )),
+        )
+        .padding_insets(EdgeInsets::new(4.0, GUTTER, 4.0, GUTTER))
+        .frame_height(PATH_BAR)
+        .fill_width(),
+    )
+}
+
+fn list_area(model: Rc<AppModel>) -> AnyView {
+    AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            0.0,
+            AnyView::new(file_table(model)),
+        )
+        .padding_insets(EdgeInsets::new(0.0, GUTTER, GUTTER, GUTTER))
+        .flex(1.0)
+        .fill_width(),
     )
 }
 
 fn file_table(model: Rc<AppModel>) -> AnyView {
+    let searching = !model.search.get().string_value().trim().is_empty();
     let mut options = TableOptions::default();
     options.selection = Some(Selection::multiple(model.selection.binding()));
     options.sort = Some(model.table_sort.binding());
     options.frozen_column_count = 1;
     options.layout = TableLayout {
-        row_height: 34.0,
-        header_height: 32.0,
+        row_height: 38.0,
+        header_height: 34.0,
         is_striped: false,
         separator_inset: Some(0.0),
         fills_width: true,
-        empty_title: "此目录为空".into(),
+        is_card: false,
+        empty_title: if searching {
+            "没有匹配的项目".into()
+        } else {
+            "这个文件夹是空的".into()
+        },
     };
 
     let activate = model.clone();
@@ -274,7 +458,15 @@ fn file_table(model: Rc<AppModel>) -> AnyView {
         .options(options)
         .on_activate(move |row: &FileItem| activate.activate(row))
         .debug_name("file-table");
-    AnyView::new(table.flex(1.0).fill_height())
+
+    AnyView::new(
+        AnyView::new(table.flex(1.0).fill_height())
+            .corner_radius(10.0)
+            .semantic_border(SemanticColorRef::border(), 1.0)
+            .semantic_background(SemanticColorRef::surface())
+            .clipped()
+            .flex(1.0),
+    )
 }
 
 fn columns(model: Rc<AppModel>) -> Vec<TableColumn<FileItem>> {
@@ -290,11 +482,11 @@ fn columns(model: Rc<AppModel>) -> Vec<TableColumn<FileItem>> {
             AnyView::new(
                 Row::new(
                     VerticalAlignment::Center,
-                    10.0,
+                    9.0,
                     AnyView::new(views!(
                         AnyView::new(ButtonIcon::new(
                             ButtonIconSource::resource(glyph),
-                            Some(16.0),
+                            Some(15.0),
                             None,
                         ))
                         .semantic_foreground(tint),
@@ -310,7 +502,7 @@ fn columns(model: Rc<AppModel>) -> Vec<TableColumn<FileItem>> {
         })
         .layout(TableColumnLayout {
             width: 320.0,
-            min_width: 200.0,
+            min_width: 180.0,
             max_width: 2000.0,
             is_flex: true,
             ..TableColumnLayout::default()
@@ -319,13 +511,17 @@ fn columns(model: Rc<AppModel>) -> Vec<TableColumn<FileItem>> {
         .compare(|left, right| compare_text(&left.name, &right.name)),
         TableColumn::new("size", "大小", |row: &FileItem| {
             AnyView::new(
-                Text::new(row.size.clone())
-                    .semantic_font(SemanticFontRef::mono())
-                    .semantic_foreground(SemanticColorRef::on_surface_variant()),
+                Text::new(if row.folder {
+                    String::new()
+                } else {
+                    row.size.clone()
+                })
+                .semantic_font(SemanticFontRef::mono())
+                .semantic_foreground(SemanticColorRef::on_surface_variant()),
             )
         })
         .layout(TableColumnLayout {
-            width: 100.0,
+            width: 92.0,
             alignment: TextAlignment::Trailing,
             ..TableColumnLayout::default()
         })
@@ -333,13 +529,17 @@ fn columns(model: Rc<AppModel>) -> Vec<TableColumn<FileItem>> {
         .compare(|left, right| compare_number(left.bytes, right.bytes)),
         TableColumn::new("modified", "修改日期", |row: &FileItem| {
             AnyView::new(
-                Text::new(row.modified.clone())
-                    .semantic_font(SemanticFontRef::body())
-                    .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                Text::new(if row.folder {
+                    String::new()
+                } else {
+                    row.modified.clone()
+                })
+                .semantic_font(SemanticFontRef::caption())
+                .semantic_foreground(SemanticColorRef::on_surface_muted()),
             )
         })
         .layout(TableColumnLayout {
-            width: 150.0,
+            width: 132.0,
             ..TableColumnLayout::default()
         })
         .visibility(ColumnVisibility::Required)
@@ -348,205 +548,358 @@ fn columns(model: Rc<AppModel>) -> Vec<TableColumn<FileItem>> {
 }
 
 fn row_menu(model: Rc<AppModel>, id: String) -> Vec<MenuEntry> {
-    let smart = model.clone();
-    let smart_id = id.clone();
-    let here = model.clone();
-    let here_id = id.clone();
+    let extract = model.clone();
+    let extract_id = id.clone();
     let copy = model.clone();
-    let copy_id = id.clone();
-    let props = model.clone();
-    let props_id = id.clone();
     vec![
-        MenuEntry::Item(MenuItem::new(1, "智能解压", move || {
-            smart.extract_item_smart(smart_id.clone())
+        MenuEntry::Item(MenuItem::new(1, "解压此项", move || {
+            extract.extract_item(extract_id.clone())
         })),
-        MenuEntry::Item(MenuItem::new(2, "解压到当前文件夹", move || {
-            here.extract_item_here(here_id.clone())
-        })),
-        MenuEntry::separator(3),
-        MenuEntry::Item(MenuItem::new(4, "复制路径", move || copy.copy_path(copy_id.clone()))),
-        MenuEntry::Item(MenuItem::new(5, "显示简介", move || {
-            props.show_properties(props_id.clone())
-        })),
+        MenuEntry::separator(2),
+        MenuEntry::Item(MenuItem::new(3, "复制路径", move || copy.copy_path(id.clone()))),
     ]
 }
 
-fn inspector_pane(model: Rc<AppModel>) -> AnyView {
-    let selected = model.selected_items();
-    let content = match selected.len() {
-        0 => archive_overview(model.clone()),
-        1 => detail_content(&selected[0]),
-        _ => multi_summary(&selected),
-    };
-    AnyView::new(
-        Column::new(HorizontalAlignment::Leading, 0.0, content)
-            .fill_height()
-            .semantic_background(SemanticColorRef::surface()),
-    )
-}
+// ---------------------------------------------------------------------------
+// footer
+// ---------------------------------------------------------------------------
 
-fn archive_overview(model: Rc<AppModel>) -> AnyView {
-    let Some(archive) = model.archive.get() else {
-        return AnyView::new(EmptyView);
+fn action_bar(model: Rc<AppModel>) -> AnyView {
+    let body: AnyView = if model.phase.get() == Phase::Extracting {
+        extracting(model.clone())
+    } else {
+        ready_bar(model.clone())
     };
     AnyView::new(
         Column::new(
             HorizontalAlignment::Leading,
             0.0,
             AnyView::new(views!(
-                Column::new(
-                    HorizontalAlignment::Center,
-                    10.0,
-                    AnyView::new(views!(
-                        icon_chip(
-                            file::archive(),
-                            SemanticColorRef::accent(),
-                            SemanticColorRef::accent_muted(),
-                            30.0,
-                            17.0,
-                            16.0,
-                        ),
-                        Text::new(archive.name.clone())
-                            .line_limit(Some(3))
-                            .alignment(TextAlignment::Center)
-                            .semantic_font(SemanticFontRef::body_strong())
-                            .semantic_foreground(SemanticColorRef::on_surface()),
-                        Badge::new(archive.format).tone(StatusTone::Info),
-                    )),
-                )
-                .padding_insets(EdgeInsets::new(24.0, 20.0, 18.0, 20.0))
-                .fill_width(),
                 Divider::horizontal(),
-                Column::new(
-                    HorizontalAlignment::Leading,
-                    14.0,
-                    AnyView::new(views!(
-                        property("项目数", archive.entry_count.to_string(), false),
-                        property("总大小", format_size(archive.total_bytes), false),
-                    )),
-                )
-                .padding(18.0)
-                .fill_width(),
-                Spacer::new(0.0),
-                Text::new("选择文件查看详情")
-                    .alignment(TextAlignment::Center)
-                    .semantic_font(SemanticFontRef::caption())
-                    .semantic_foreground(SemanticColorRef::on_surface_muted())
-                    .padding(18.0)
-                    .fill_width(),
+                AnyView::new(body).frame_height(FOOTER).fill_width(),
             )),
         )
-        .fill(),
+        .fill_width()
+        .semantic_background(SemanticColorRef::surface()),
     )
 }
 
-fn multi_summary(items: &[FileItem]) -> AnyView {
-    let total: u64 = items.iter().map(|item| item.bytes).sum();
-    let folders = items.iter().filter(|item| item.folder).count();
-    let files = items.len() - folders;
-    AnyView::new(
-        Column::new(
-            HorizontalAlignment::Leading,
-            0.0,
+fn ready_bar(model: Rc<AppModel>) -> AnyView {
+    let choose = model.clone();
+    let destination = Button::new(
+        Row::new(
+            VerticalAlignment::Center,
+            7.0,
             AnyView::new(views!(
-                Column::new(
-                    HorizontalAlignment::Center,
-                    10.0,
-                    AnyView::new(views!(
-                        icon_chip(
-                            file::folder(),
-                            SemanticColorRef::accent(),
-                            SemanticColorRef::accent_muted(),
-                            30.0,
-                            17.0,
-                            16.0,
-                        ),
-                        Text::new(format!("{} 个项目", items.len()))
-                            .semantic_font(SemanticFontRef::body_strong())
-                            .semantic_foreground(SemanticColorRef::on_surface()),
-                        Text::new("已选中")
-                            .semantic_font(SemanticFontRef::caption())
-                            .semantic_foreground(SemanticColorRef::on_surface_muted()),
-                    )),
-                )
-                .padding_insets(EdgeInsets::new(24.0, 20.0, 18.0, 20.0))
-                .fill_width(),
-                Divider::horizontal(),
-                Column::new(
-                    HorizontalAlignment::Leading,
-                    14.0,
-                    AnyView::new(views!(
-                        property("文件夹", folders.to_string(), false),
-                        property("文件", files.to_string(), false),
-                        property("总大小", format_size(total), false),
-                    )),
-                )
-                .padding(18.0)
-                .fill_width(),
+                AnyView::new(ButtonIcon::new(
+                    ButtonIconSource::resource(file::folder_open()),
+                    Some(13.0),
+                    None,
+                ))
+                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                Text::new(model.destination_label())
+                    .line_limit(Some(1))
+                    .truncating_tail()
+                    .semantic_font(SemanticFontRef::mono())
+                    .semantic_foreground(SemanticColorRef::on_surface()),
+                AnyView::new(ButtonIcon::new(
+                    ButtonIconSource::resource(navigation::chevron_down()),
+                    Some(11.0),
+                    None,
+                ))
+                .semantic_foreground(SemanticColorRef::on_surface_muted()),
             )),
-        )
-        .fill(),
+        ),
+        move || choose.choose_destination(),
     )
-}
+    .accessibility_text("更改解压位置")
+    .tooltip("选择解压目标位置")
+    .button_style(GhostButtonStyle)
+    .control_size(ControlSize::Small);
 
-fn detail_content(item: &FileItem) -> AnyView {
-    let (glyph, tint) = file_glyph(&item.ext, item.folder);
-    let kind = kind_label(item);
-    AnyView::new(
-        Column::new(
-            HorizontalAlignment::Leading,
-            0.0,
+    let status = model.status.get();
+    let tone_color = match status.tone {
+        Tone::Ok => SemanticColorRef::on_surface_muted(),
+        Tone::Busy => SemanticColorRef::accent(),
+        Tone::Error => SemanticColorRef::error(),
+    };
+    let glyph = match status.tone {
+        Tone::Ok => status::check_circle(),
+        Tone::Busy => status::loader(),
+        Tone::Error => status::alert_circle(),
+    };
+    let detail = if status.detail.trim().is_empty() {
+        status.text.clone()
+    } else {
+        format!("{} · {}", status.text, status.detail)
+    };
+
+    let left: AnyView = AnyView::new(Column::new(
+        HorizontalAlignment::Leading,
+        4.0,
+        AnyView::new(views!(
+            Row::new(
+                VerticalAlignment::Center,
+                6.0,
+                AnyView::new(views!(
+                    Text::new("解压到")
+                        .semantic_font(SemanticFontRef::caption())
+                        .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                    destination,
+                )),
+            )
+            .frame_min_width(0.0),
+            Row::new(
+                VerticalAlignment::Center,
+                5.0,
+                AnyView::new(views!(
+                    AnyView::new(ButtonIcon::new(
+                        ButtonIconSource::resource(glyph),
+                        Some(11.0),
+                        None,
+                    ))
+                    .semantic_foreground(tone_color.clone()),
+                    Text::new(detail)
+                        .line_limit(Some(1))
+                        .truncating_tail()
+                        .semantic_font(SemanticFontRef::caption())
+                        .semantic_foreground(tone_color),
+                )),
+            )
+            .frame_min_width(0.0),
+        )),
+    )
+    .frame_min_width(0.0)
+    .flex(1.0));
+
+    let wrap_box = Checkbox::labeled_from_boolean("同名文件夹", model.wrap_in_folder.binding())
+        .control_size(ControlSize::Small);
+
+    let run = model.clone();
+    let primary = Button::new(
+        Row::new(
+            VerticalAlignment::Center,
+            6.0,
             AnyView::new(views!(
-                Column::new(
-                    HorizontalAlignment::Center,
-                    10.0,
-                    AnyView::new(views!(
-                        icon_chip(
-                            glyph,
-                            tint,
-                            SemanticColorRef::surface_variant(),
-                            30.0,
-                            17.0,
-                            16.0,
-                        ),
-                        Text::new(item.name.clone())
-                            .line_limit(Some(3))
-                            .alignment(TextAlignment::Center)
-                            .semantic_font(SemanticFontRef::body_strong())
-                            .semantic_foreground(SemanticColorRef::on_surface()),
-                        Text::new(kind.clone())
-                            .semantic_font(SemanticFontRef::caption())
-                            .semantic_foreground(SemanticColorRef::on_surface_muted()),
-                    )),
-                )
-                .padding_insets(EdgeInsets::new(24.0, 20.0, 18.0, 20.0))
-                .fill_width(),
-                Divider::horizontal(),
-                Column::new(
-                    HorizontalAlignment::Leading,
-                    14.0,
-                    AnyView::new(views!(
-                        property("类型", kind, false),
-                        property("大小", item.size.clone(), false),
-                        property("修改时间", item.modified.clone(), false),
-                        property("路径", item.path.clone(), true),
-                    )),
-                )
-                .padding(18.0)
-                .fill_width(),
+                ButtonIcon::new(ButtonIconSource::resource(action::download()), Some(14.0), None),
+                Text::new(model.action_label()),
             )),
+        ),
+        move || run.extract(),
+    )
+    .enabled(!model.is_busy())
+    .accessibility_text("解压")
+    .tooltip("解压到左侧显示的位置")
+    .button_style(PrimaryButtonStyle)
+    .control_size(ControlSize::Small);
+
+    AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            16.0,
+            AnyView::new(views!(left, wrap_box, primary)),
         )
-        .fill(),
+        .padding_insets(EdgeInsets::new(12.0, GUTTER, 12.0, GUTTER))
+        .fill_width(),
     )
 }
 
-fn loading_view() -> AnyView {
+fn extracting(model: Rc<AppModel>) -> AnyView {
+    let progress = model.progress.get();
+    let cancel = model.clone();
+    let current = if progress.current_file.trim().is_empty() {
+        progress.label.clone()
+    } else {
+        progress.current_file.clone()
+    };
+
+    let left: AnyView = AnyView::new(Column::new(
+        HorizontalAlignment::Leading,
+        7.0,
+        AnyView::new(views!(
+            Row::new(
+                VerticalAlignment::Center,
+                8.0,
+                AnyView::new(views!(
+                    Text::new(current)
+                        .line_limit(Some(1))
+                        .truncating_tail()
+                        .semantic_font(SemanticFontRef::body())
+                        .semantic_foreground(SemanticColorRef::on_surface())
+                        .frame_min_width(0.0)
+                        .flex(1.0),
+                    Text::new(progress.label.clone())
+                        .semantic_font(SemanticFontRef::mono())
+                        .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                )),
+            ),
+            ProgressView::new(Some(progress.fraction))
+                .height(4.0)
+                .tone(StatusTone::Info)
+                .fill_width(),
+        )),
+    )
+    .frame_min_width(0.0)
+    .flex(1.0));
+
+    let cancel_button = Button::new(
+        Text::new("取消")
+            .semantic_font(SemanticFontRef::body())
+            .semantic_foreground(SemanticColorRef::on_surface()),
+        move || cancel.cancel_extract(),
+    )
+    .accessibility_text("取消解压")
+    .button_style(GhostButtonStyle)
+    .control_size(ControlSize::Small);
+
+    AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            16.0,
+            AnyView::new(views!(left, cancel_button)),
+        )
+        .padding_insets(EdgeInsets::new(12.0, GUTTER, 12.0, GUTTER))
+        .fill_width(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// empty / loading
+// ---------------------------------------------------------------------------
+
+fn idle(model: Rc<AppModel>) -> AnyView {
+    let open = model.clone();
+    let open_card = action_card(
+        action::plus(),
+        true,
+        "打开压缩包",
+        "浏览、选择并解压一个压缩包",
+        move || open.open_dialog(),
+    );
+
+    let recent_path: Option<PathBuf> = model.recent.get().into_iter().next();
+    let recent_model = model.clone();
+    let recent_card = match recent_path.clone() {
+        Some(path) => action_card(
+            data::clock(),
+            false,
+            "最近打开",
+            file_name(&path),
+            move || recent_model.open_recent(path.clone()),
+        ),
+        None => action_card(
+            data::clock(),
+            false,
+            "最近打开",
+            "还没有打开过压缩包",
+            || {},
+        ),
+    };
+
+    // Rhythm comes from padding, not from spacer children: a fixed frame on an
+    // empty view collapses inside a flex column.
+    let caption = Column::new(
+        HorizontalAlignment::Center,
+        0.0,
+        AnyView::new(views!(
+            Text::new("MugenZip")
+                .alignment(TextAlignment::Center)
+                .semantic_font(SemanticFontRef::title())
+                .semantic_foreground(SemanticColorRef::on_surface())
+                .padding_insets(EdgeInsets::new(24.0, 0.0, 0.0, 0.0)),
+            Text::new("简单、快速的压缩包工具")
+                .alignment(TextAlignment::Center)
+                .semantic_font(SemanticFontRef::body())
+                .semantic_foreground(SemanticColorRef::on_surface_variant())
+                .padding_insets(EdgeInsets::new(8.0, 0.0, 0.0, 0.0)),
+        )),
+    );
+
+    let cards = Row::new(
+        VerticalAlignment::Center,
+        16.0,
+        AnyView::new(views!(open_card, recent_card)),
+    );
+
     AnyView::new(
         Column::new(
             HorizontalAlignment::Center,
-            12.0,
+            0.0,
             AnyView::new(views!(
-                Spinner::new().size(28.0),
+                Spacer::new(0.0),
+                tile(file::package(), 76.0, SemanticColorRef::accent_muted(), SemanticColorRef::accent()),
+                caption,
+                AnyView::new(cards).padding_insets(EdgeInsets::new(30.0, 0.0, 0.0, 0.0)),
+                Text::new("也可以把压缩包拖到窗口任意位置")
+                    .alignment(TextAlignment::Center)
+                    .semantic_font(SemanticFontRef::caption())
+                    .semantic_foreground(SemanticColorRef::on_surface_muted())
+                    .padding_insets(EdgeInsets::new(20.0, 0.0, 0.0, 0.0)),
+                Spacer::new(0.0),
+            )),
+        )
+        .fill(),
+    )
+}
+
+/// A generous white card: glyph badge, one bold line, one quiet line.
+fn action_card(
+    glyph: cove_ui::imaging::BundleImageResource,
+    primary: bool,
+    title: &str,
+    subtitle: impl Into<String>,
+    action: impl Fn() + 'static,
+) -> AnyView {
+    let badge_tint = if primary {
+        SemanticColorRef::accent()
+    } else {
+        SemanticColorRef::on_surface_variant()
+    };
+    let badge_bg = if primary {
+        SemanticColorRef::accent_muted()
+    } else {
+        SemanticColorRef::surface_variant()
+    };
+    let content = Column::new(
+        HorizontalAlignment::Center,
+        0.0,
+        AnyView::new(views!(
+            tile(glyph, 44.0, badge_bg, badge_tint),
+            Text::new(title)
+                .alignment(TextAlignment::Center)
+                .semantic_font(SemanticFontRef::headline())
+                .semantic_foreground(SemanticColorRef::on_surface())
+                .padding_insets(EdgeInsets::new(14.0, 0.0, 0.0, 0.0)),
+            Text::new(subtitle.into())
+                .alignment(TextAlignment::Center)
+                .line_limit(Some(1))
+                .truncating_tail()
+                .semantic_font(SemanticFontRef::caption())
+                .semantic_foreground(SemanticColorRef::on_surface_muted())
+                .padding_insets(EdgeInsets::new(5.0, 0.0, 0.0, 0.0)),
+        )),
+    )
+    .padding_insets(EdgeInsets::new(28.0, 14.0, 20.0, 14.0));
+
+    AnyView::new(
+        Button::new(content, action)
+            .accessibility_text(title.to_string())
+            .button_style(PlainButtonStyle)
+            .frame_size(286.0, 152.0)
+            .corner_radius(12.0)
+            .semantic_background(SemanticColorRef::surface())
+            .semantic_border(SemanticColorRef::border(), 1.0)
+            .shadow(Color::from_rgba8(0, 0, 0, 10), 0.0, 2.0, 10.0),
+    )
+}
+
+fn reading() -> AnyView {
+    AnyView::new(
+        Column::new(
+            HorizontalAlignment::Center,
+            10.0,
+            AnyView::new(views!(
+                Spinner::new().size(22.0),
                 Text::new("正在读取归档…")
                     .semantic_font(SemanticFontRef::body())
                     .semantic_foreground(SemanticColorRef::on_surface_muted()),
@@ -556,148 +909,35 @@ fn loading_view() -> AnyView {
     )
 }
 
-fn empty_view(model: Rc<AppModel>) -> AnyView {
-    let open = model.clone();
-    AnyView::new(
-        EmptyState::with_action(
-            "没有打开的压缩包",
-            "把压缩包拖进窗口，或从工具栏选择一个文件。",
-            labelled_button(file::archive(), "打开压缩包", move || open.open_dialog())
-                .button_style(PrimaryButtonStyle),
-        )
-        .icon(file::inbox())
-        .prominence(EmptyStateProminence::Spacious)
-        .fill(),
-    )
-}
+// ---------------------------------------------------------------------------
+// pieces
+// ---------------------------------------------------------------------------
 
-fn extraction_bar(model: Rc<AppModel>) -> AnyView {
-    let progress = model.progress.get();
-    if model.phase.get() != Phase::Extracting && progress.fraction <= 0.0 {
-        return AnyView::new(EmptyView);
-    }
-    let cancel = model.clone();
-    let extracting = model.phase.get() == Phase::Extracting;
-    AnyView::new(
-        Column::new(
-            HorizontalAlignment::Leading,
-            8.0,
-            AnyView::new(views!(
-                Row::new(
-                    VerticalAlignment::Center,
-                    10.0,
-                    AnyView::new(views!(
-                        AnyView::new(ButtonIcon::new(
-                            ButtonIconSource::resource(action::download()),
-                            Some(15.0),
-                            None,
-                        ))
-                        .semantic_foreground(SemanticColorRef::accent()),
-                        Text::new(progress.current_file.clone())
-                            .truncating_tail()
-                            .semantic_font(SemanticFontRef::caption())
-                            .semantic_foreground(SemanticColorRef::on_surface_variant())
-                            .frame_min_width(0.0)
-                            .flex(1.0),
-                        Text::new(progress.label.clone())
-                            .semantic_font(SemanticFontRef::mono())
-                            .semantic_foreground(SemanticColorRef::on_surface_muted()),
-                        Button::icon_default(
-                            ButtonIconSource::resource(action::x()),
-                            move || cancel.cancel_extract(),
-                        )
-                        .enabled(extracting)
-                        .accessibility_text("取消提取")
-                        .tooltip("取消提取")
-                        .button_style(GhostButtonStyle),
-                    )),
-                )
-                .fill_width(),
-                ProgressView::new(Some(progress.fraction))
-                    .height(4.0)
-                    .tone(StatusTone::Info)
-                    .fill_width(),
-            )),
-        )
-        .padding_insets(EdgeInsets::new(10.0, 14.0, 10.0, 14.0))
-        .fill_width()
-        .semantic_background(SemanticColorRef::surface()),
-    )
-}
-
-fn status_bar(model: Rc<AppModel>) -> AnyView {
-    let status = model.status.get();
-    let (tone, glyph) = match status.tone {
-        Tone::Ok => (StatusTone::Success, status::check_circle()),
-        Tone::Busy => (StatusTone::Info, status::loader()),
-        Tone::Error => (StatusTone::Danger, status::alert_circle()),
-    };
-    let leading = StatusBarText::new(status.text.clone())
-        .detail(status.detail.clone())
-        .icon(glyph)
-        .tone(tone);
-
-    let summary = match model.archive.get() {
-        Some(_) => {
-            if model.selection.get().is_empty() {
-                let items = model.current_items();
-                let folders = items.iter().filter(|item| item.folder).count();
-                let files = items.len() - folders;
-                format!("{folders} 个文件夹 · {files} 个文件")
-            } else {
-                let items = model.selected_items();
-                let total: u64 = items.iter().map(|item| item.bytes).sum();
-                format!("已选 {} 项 · {}", items.len(), format_size(total))
-            }
-        }
-        None => "拖放压缩包到窗口即可打开".to_string(),
-    };
-    let trailing = StatusBarText::new(summary);
-
-    AnyView::new(StatusBar::new(
-        AnyView::new(leading),
-        AnyView::new(trailing),
-    ))
-}
-
-fn property(label: &str, value: String, mono: bool) -> AnyView {
-    let font = if mono {
-        SemanticFontRef::mono()
-    } else {
-        SemanticFontRef::body()
-    };
-    AnyView::new(
-        Column::new(
-            HorizontalAlignment::Leading,
-            3.0,
-            AnyView::new(views!(
-                Text::new(label)
-                    .semantic_font(SemanticFontRef::caption())
-                    .semantic_foreground(SemanticColorRef::on_surface_muted()),
-                Text::new(value)
-                    .line_limit(Some(4))
-                    .semantic_font(font)
-                    .semantic_foreground(SemanticColorRef::on_surface()),
-            )),
-        )
-        .fill_width(),
-    )
-}
-
-fn icon_chip(
+fn tile(
     glyph: cove_ui::imaging::BundleImageResource,
-    tint: SemanticColorRef,
+    size: f32,
     background: SemanticColorRef,
-    icon_size: f32,
-    padding: f32,
-    radius: f32,
+    tint: SemanticColorRef,
 ) -> AnyView {
+    let radius = if size >= 60.0 {
+        18.0
+    } else if size >= 40.0 {
+        12.0
+    } else {
+        8.0
+    };
     AnyView::new(
-        ButtonIcon::new(ButtonIconSource::resource(glyph), Some(icon_size), None)
-            .semantic_foreground(tint)
-            .padding(padding)
-            .semantic_background(background)
-            .corner_radius(radius),
+        AnyView::new(
+            AnyView::new(ButtonIcon::new(
+                ButtonIconSource::resource(glyph),
+                Some(size * 0.48),
+                None,
+            ))
+            .semantic_foreground(tint),
+        )
+        .frame_size(size, size)
+        .corner_radius(radius)
+        .semantic_background(background),
     )
 }
 
@@ -706,53 +946,20 @@ fn file_glyph(ext: &str, folder: bool) -> (cove_ui::imaging::BundleImageResource
         return (file::folder(), SemanticColorRef::accent());
     }
     match ext.to_lowercase().as_str() {
-        "rs" | "c" | "h" | "cpp" | "cc" | "js" | "ts" | "py" | "go" | "swift" | "java" | "sh"
-        | "toml" | "json" | "yaml" | "yml" | "xml" | "html" | "css" => {
-            (file::file_code(), SemanticColorRef::accent_secondary())
-        }
         "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "heic" | "bmp" | "ico" => {
-            (media::image(), SemanticColorRef::success())
+            (media::image(), SemanticColorRef::accent_secondary())
         }
-        "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" => (media::music(), SemanticColorRef::warning()),
-        "mp4" | "mov" | "mkv" | "avi" | "webm" => (media::video(), SemanticColorRef::warning()),
+        "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" => {
+            (media::music(), SemanticColorRef::accent_secondary())
+        }
+        "mp4" | "mov" | "mkv" | "avi" | "webm" => {
+            (media::video(), SemanticColorRef::accent_secondary())
+        }
         "zip" | "7z" | "rar" | "tar" | "gz" | "tgz" | "bz2" | "xz" => {
-            (file::package(), SemanticColorRef::warning())
+            (file::package(), SemanticColorRef::accent())
         }
-        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" => {
-            (file::file_text(), SemanticColorRef::error())
-        }
-        "txt" | "md" | "log" | "rtf" => (file::file_text(), SemanticColorRef::on_surface_variant()),
         _ => (file::file(), SemanticColorRef::on_surface_muted()),
     }
-}
-
-fn kind_label(item: &FileItem) -> String {
-    if item.folder {
-        "文件夹".to_string()
-    } else if item.ext.is_empty() {
-        "文件".to_string()
-    } else {
-        format!("{} 文件", item.ext.to_lowercase())
-    }
-}
-
-fn labelled_button(
-    glyph: cove_ui::imaging::BundleImageResource,
-    title: &str,
-    action: impl Fn() + 'static,
-) -> Button {
-    Button::new(
-        Row::new(
-            VerticalAlignment::Center,
-            6.0,
-            AnyView::new(views!(
-                ButtonIcon::new(ButtonIconSource::resource(glyph), Some(15.0), None),
-                Text::new(title),
-            )),
-        ),
-        action,
-    )
-    .accessibility_text(title)
 }
 
 fn compare_text(left: &str, right: &str) -> ComparisonResult {

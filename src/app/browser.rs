@@ -94,6 +94,19 @@ impl ArchiveBrowser {
             .collect()
     }
 
+    /// Every file entry with its byte size, for selection accounting.
+    pub fn all_entries(&self) -> Vec<(String, u64)> {
+        let mut entries = Vec::new();
+        for items in self.children.values() {
+            for item in items {
+                if !item.folder {
+                    entries.push((item.id.clone(), item.bytes));
+                }
+            }
+        }
+        entries
+    }
+
     pub fn breadcrumbs(&self, directory: &str) -> Vec<BreadcrumbItem> {
         let mut breadcrumbs = vec![BreadcrumbItem {
             name: self.archive_name.clone(),

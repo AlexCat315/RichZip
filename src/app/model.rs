@@ -17,9 +17,8 @@ use cove_ui::hosts::desktop::application::composition::AppDisplayHandleHolder;
 use crate::engine::{
     self, ArchiveEntry, ArchiveError, ExtractReport, ExtractionProgress, format_size, open_archive,
 };
-use browser::{ArchiveBrowser, FileItem};
 
-use super::browser;
+use super::browser::{self, ArchiveBrowser, FileItem};
 
 pub const ARCHIVE_EXTENSIONS: [&str; 10] = [
     "zip", "7z", "rar", "tar", "gz", "tgz", "cbz", "cbr", "bz2", "xz",
@@ -33,6 +32,22 @@ pub struct LoadedArchive {
     pub browser: ArchiveBrowser,
     pub entry_count: usize,
     pub total_bytes: u64,
+}
+
+impl LoadedArchive {
+    /// "ZIP · 8 项 · 24 B" — the one line of metadata the header carries.
+    pub fn meta_line(&self) -> String {
+        format!(
+            "{} · {} 项 · {}",
+            self.format,
+            self.entry_count,
+            format_size(self.total_bytes)
+        )
+    }
+
+    pub fn folder_dir(&self) -> Option<PathBuf> {
+        self.path.parent().map(|parent| parent.to_path_buf())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -108,15 +123,21 @@ pub struct AppModel {
     pub archive: State<Option<Arc<LoadedArchive>>>,
     pub directory: State<String>,
     pub selection: State<BTreeSet<String>>,
+    /// The folder highlighted in the sidebar outline.
+    pub tree_selection: State<Option<String>>,
     pub search: State<TextBuffer>,
     pub table_sort: State<Option<TableSort>>,
-    pub tree_selection: State<Option<String>>,
-    pub sidebar_fraction: State<f32>,
-    pub inspector_visible: State<bool>,
+    /// Where the next extraction lands. Always visible in the action bar, so
+    /// the user never has to guess what "解压" is about to do.
+    pub destination: State<Option<PathBuf>>,
+    /// Wrap the payload in a folder named after the archive, deduplicated.
+    pub wrap_in_folder: State<bool>,
     pub phase: State<Phase>,
     pub progress: State<Progress>,
     pub status: State<Status>,
     pub drop_targeted: State<bool>,
+    /// Archives opened this session, newest first, for the empty state.
+    pub recent: State<Vec<PathBuf>>,
     task: Rc<RefCell<TaskSlot>>,
     sender: work::UiSender<TaskEvent>,
     hooks_installed: Cell<bool>,
@@ -127,15 +148,16 @@ impl AppModel {
         let archive = State::new(None);
         let directory = State::new(String::new());
         let selection = State::new(BTreeSet::new());
+        let tree_selection = State::new(Some(String::new()));
         let search = State::new(TextBuffer::empty());
         let table_sort = State::new(None);
-        let tree_selection = State::new(Some(String::new()));
-        let sidebar_fraction = State::new(0.22);
-        let inspector_visible = State::new(true);
+        let destination = State::new(None);
+        let wrap_in_folder = State::new(false);
         let phase = State::new(Phase::Idle);
         let progress = State::new(Progress::default());
         let status = State::new(Status::default());
         let drop_targeted = State::new(false);
+        let recent = State::new(Vec::new());
         let task = Rc::new(RefCell::new(TaskSlot::default()));
 
         let sender = {
@@ -143,6 +165,7 @@ impl AppModel {
             let directory = directory.clone();
             let selection = selection.clone();
             let tree_selection = tree_selection.clone();
+            let destination = destination.clone();
             let phase = phase.clone();
             let progress = progress.clone();
             let status = status.clone();
@@ -156,6 +179,7 @@ impl AppModel {
                     &directory,
                     &selection,
                     &tree_selection,
+                    &destination,
                     &phase,
                     &progress,
                     &status,
@@ -169,15 +193,16 @@ impl AppModel {
             archive,
             directory,
             selection,
+            tree_selection,
             search,
             table_sort,
-            tree_selection,
-            sidebar_fraction,
-            inspector_visible,
+            destination,
+            wrap_in_folder,
             phase,
             progress,
             status,
             drop_targeted,
+            recent,
             task,
             sender,
             hooks_installed: Cell::new(false),
@@ -191,15 +216,16 @@ impl AppModel {
             DynamicField::state("archive", &self.archive),
             DynamicField::state("directory", &self.directory),
             DynamicField::state("selection", &self.selection),
+            DynamicField::state("treeSelection", &self.tree_selection),
             DynamicField::state("search", &self.search),
             DynamicField::state("tableSort", &self.table_sort),
-            DynamicField::state("treeSelection", &self.tree_selection),
-            DynamicField::state("sidebarFraction", &self.sidebar_fraction),
-            DynamicField::state("inspectorVisible", &self.inspector_visible),
+            DynamicField::state("destination", &self.destination),
+            DynamicField::state("wrapInFolder", &self.wrap_in_folder),
             DynamicField::state("phase", &self.phase),
             DynamicField::state("progress", &self.progress),
             DynamicField::state("status", &self.status),
             DynamicField::state("dropTargeted", &self.drop_targeted),
+            DynamicField::state("recent", &self.recent),
         ]
     }
 
@@ -302,13 +328,106 @@ impl AppModel {
             .collect()
     }
 
-    /// The selected entries in the current directory, for the inspector.
+    /// The selected entries in the current directory, for the action bar.
     pub fn selected_items(&self) -> Vec<FileItem> {
         let selection = self.selection.get();
         self.current_items()
             .into_iter()
             .filter(|item| selection.contains(&item.id))
             .collect()
+    }
+
+    /// The entries the current selection would extract, resolved through the
+    /// archive so a selected folder counts its whole subtree.
+    pub fn selection_scope(&self) -> (usize, u64) {
+        let selection = self.selection.get();
+        if selection.is_empty() {
+            let archive = self.archive.get();
+            return match archive {
+                Some(archive) => (archive.entry_count, archive.total_bytes),
+                None => (0, 0),
+            };
+        }
+        let prefixes: Vec<String> = selection.iter().map(|id| format!("{id}/")).collect();
+        let mut count = 0;
+        let mut bytes = 0_u64;
+        if let Some(archive) = self.archive.get() {
+            for entry in archive.browser.all_entries() {
+                let path = &entry.0;
+                if selection.contains(path) || prefixes.iter().any(|p| path.starts_with(p)) {
+                    count += 1;
+                    bytes = bytes.saturating_add(entry.1);
+                }
+            }
+        }
+        (count, bytes)
+    }
+
+    /// "解压全部 8 项" / "解压选中 3 项" — the primary button's label.
+    pub fn action_label(&self) -> String {
+        let selected = self.selection.get().len();
+        if selected == 0 {
+            let count = self.archive.get().map_or(0, |archive| archive.entry_count);
+            format!("解压全部 {count} 项")
+        } else {
+            format!("解压选中 {selected} 项")
+        }
+    }
+
+    /// The destination as the bar shows it: home-relative, never a raw path.
+    pub fn destination_label(&self) -> String {
+        let Some(destination) = self.destination.get() else {
+            return "未选择目标位置".into();
+        };
+        abbreviate_home(&destination)
+    }
+
+    pub fn set_destination(&self, path: PathBuf) {
+        self.destination.set(Some(path));
+    }
+
+    pub fn choose_destination(&self) {
+        if self.is_busy() {
+            return;
+        }
+        let current = self.destination.get();
+        let fallback = current
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .or_else(|| self.archive.get().and_then(|archive| {
+                archive.folder_dir().map(|dir| dir.to_string_lossy().into_owned())
+            }));
+        let model = self.clone();
+        FolderPicker::request(fallback.as_deref(), Box::new(move |chosen| {
+            if let Some(directory) = chosen {
+                model.set_destination(PathBuf::from(directory));
+            }
+        }));
+    }
+
+    pub fn toggle_wrap(&self) {
+        let wrap = self.wrap_in_folder.get();
+        self.wrap_in_folder.set(!wrap);
+    }
+
+    /// The single extraction entry point used by the action bar.
+    pub fn extract(&self) {
+        let Some(destination) = self.destination.get() else {
+            self.choose_destination();
+            return;
+        };
+        let target = if self.wrap_in_folder.get() {
+            match self.archive.get() {
+                Some(archive) => {
+                    let base = engine::archive_base_name(&archive.path);
+                    engine::unique_output_dir(&destination.join(base))
+                }
+                None => destination,
+            }
+        } else {
+            destination
+        };
+        self.run_extract(target, self.selection.get());
     }
 
     /// Starts a new generation, cancelling nothing that is already running: the
@@ -330,11 +449,12 @@ impl AppModel {
         self.directory.set(String::new());
         self.selection.set(BTreeSet::new());
         self.search.set(TextBuffer::empty());
-        self.tree_selection.set(Some(String::new()));
+        self.destination.set(path.parent().map(|parent| parent.to_path_buf()));
         self.phase.set(Phase::Loading);
         self.drop_targeted.set(false);
+        self.push_recent(path.clone());
         self.status.set(Status {
-            text: "正在打开".into(),
+            text: "正在读取".into(),
             detail: path.display().to_string(),
             tone: Tone::Busy,
         });
@@ -346,82 +466,39 @@ impl AppModel {
         });
     }
 
-    fn archive_parent(&self) -> Option<PathBuf> {
-        self.archive
-            .get()?
-            .path
-            .parent()
-            .map(|parent| parent.to_path_buf())
+    fn push_recent(&self, path: PathBuf) {
+        let mut recent = self.recent.get();
+        recent.retain(|candidate| candidate != &path);
+        recent.insert(0, path);
+        recent.truncate(4);
+        self.recent.set(recent);
     }
 
-    /// Smart extraction: the engine bundles the selection into a named folder
-    /// only when it spans multiple top-level roots, otherwise extracts in place.
-    pub fn extract_smart(&self) {
-        if let Some(parent) = self.archive_parent() {
-            self.run_extract(parent, true);
-        }
+    /// Re-opens an archive listed in the empty state.
+    pub fn open_recent(&self, path: PathBuf) {
+        self.open(path);
     }
 
-    /// Extracts the selection straight into the archive's folder.
-    pub fn extract_here(&self) {
-        if let Some(parent) = self.archive_parent() {
-            self.run_extract(parent, false);
-        }
-    }
-
-    /// Extracts the selection into a fresh folder named after the archive,
-    /// deduplicated against existing folders.
-    pub fn extract_named(&self) {
-        let Some(archive) = self.archive.get() else {
+    /// Extraction of one entry (and its subtree) into the visible destination.
+    pub fn extract_item(&self, id: String) {
+        let Some(destination) = self.destination.get() else {
             return;
         };
-        let Some(parent) = archive.path.parent().map(|parent| parent.to_path_buf()) else {
-            return;
-        };
-        let base = engine::archive_base_name(&archive.path);
-        let destination = engine::unique_output_dir(&parent.join(base));
-        self.run_extract(destination, false);
-    }
-
-    /// Lets the user pick a destination folder, then extracts smartly into it.
-    pub fn extract_dialog(&self) {
-        if self.is_busy() {
-            return;
-        }
-        let Some(archive) = self.archive.get() else {
-            return;
-        };
-        let default_path = archive
-            .path
-            .parent()
-            .map(|parent| parent.to_string_lossy().into_owned());
-        let model = self.clone();
-        FolderPicker::request(default_path.as_deref(), Box::new(move |chosen| {
-            if let Some(directory) = chosen {
-                model.run_extract(PathBuf::from(directory), true);
+        let target = if self.wrap_in_folder.get() {
+            match self.archive.get() {
+                Some(archive) => {
+                    let base = engine::archive_base_name(&archive.path);
+                    engine::unique_output_dir(&destination.join(base))
+                }
+                None => destination,
             }
-        }));
+        } else {
+            destination
+        };
+        self.run_extract(target, BTreeSet::from([id]));
     }
 
-    /// Context-menu extraction of a single entry (and its subtree).
-    pub fn extract_item_smart(&self, id: String) {
-        if let Some(parent) = self.archive_parent() {
-            self.run_extract_with(parent, true, BTreeSet::from([id]));
-        }
-    }
-
-    pub fn extract_item_here(&self, id: String) {
-        if let Some(parent) = self.archive_parent() {
-            self.run_extract_with(parent, false, BTreeSet::from([id]));
-        }
-    }
-
-    fn run_extract(&self, destination: PathBuf, smart: bool) {
-        let selected = self.selection.get();
-        self.run_extract_with(destination, smart, selected);
-    }
-
-    fn run_extract_with(&self, destination: PathBuf, smart: bool, selected: BTreeSet<String>) {
+    fn run_extract(&self, destination: PathBuf, selected: BTreeSet<String>) {
         if self.is_busy() {
             return;
         }
@@ -436,8 +513,8 @@ impl AppModel {
             current_file: "正在校验归档路径…".into(),
         });
         self.status.set(Status {
-            text: "正在提取".into(),
-            detail: destination.display().to_string(),
+            text: "正在解压".into(),
+            detail: abbreviate_home(&destination),
             tone: Tone::Busy,
         });
 
@@ -450,7 +527,7 @@ impl AppModel {
                 archive.extract_entries(
                     &destination,
                     &predicate,
-                    smart,
+                    false,
                     &mut |progress| {
                         if throttle.should_send(&progress) {
                             sender.send(TaskEvent::Progress {
@@ -484,8 +561,8 @@ impl AppModel {
         if !archive.browser.contains_directory(&directory) {
             return;
         }
-        self.directory.set(directory.clone());
-        self.tree_selection.set(Some(directory));
+        self.tree_selection.set(Some(directory.clone()));
+        self.directory.set(directory);
         self.selection.set(BTreeSet::new());
     }
 
@@ -498,18 +575,13 @@ impl AppModel {
         if item.folder {
             self.enter_directory(item.id.clone());
         } else {
-            self.show_properties(item.id.clone());
+            self.selection.set(BTreeSet::from([item.id.clone()]));
         }
     }
 
     pub fn select_all(&self) {
         let ids: BTreeSet<String> = self.current_items().into_iter().map(|item| item.id).collect();
         self.selection.set(ids);
-    }
-
-    pub fn show_properties(&self, id: String) {
-        self.selection.set(BTreeSet::from([id]));
-        self.inspector_visible.set(true);
     }
 
     pub fn copy_path(&self, id: String) {
@@ -519,11 +591,6 @@ impl AppModel {
             detail: id,
             tone: Tone::Ok,
         });
-    }
-
-    pub fn toggle_inspector(&self) {
-        let visible = self.inspector_visible.get();
-        self.inspector_visible.set(!visible);
     }
 }
 
@@ -577,6 +644,7 @@ fn apply_event(
     directory: &State<String>,
     selection: &State<BTreeSet<String>>,
     tree_selection: &State<Option<String>>,
+    destination: &State<Option<PathBuf>>,
     phase: &State<Phase>,
     progress: &State<Progress>,
     status: &State<Status>,
@@ -594,20 +662,23 @@ fn apply_event(
             task.borrow_mut().cancel = None;
             match result {
                 Ok(loaded) => {
+                    let folder = loaded.folder_dir();
                     let summary = format!(
-                        "{} · {} 个项目 · 共 {}",
-                        loaded.name,
+                        "{} 项 · {}",
                         loaded.entry_count,
                         format_size(loaded.total_bytes)
                     );
                     directory.set(String::new());
                     selection.set(BTreeSet::new());
                     tree_selection.set(Some(String::new()));
+                    if destination.get().is_none() {
+                        destination.set(folder);
+                    }
                     set_window_title(&loaded.name);
                     archive.set(Some(Arc::new(loaded)));
                     phase.set(Phase::Ready);
                     status.set(Status {
-                        text: "就绪".into(),
+                        text: "已打开".into(),
                         detail: summary,
                         tone: Tone::Ok,
                     });
@@ -655,11 +726,11 @@ fn apply_event(
                         current_file: String::new(),
                     });
                     status.set(Status {
-                        text: "提取完成".into(),
+                        text: "解压完成".into(),
                         detail: format!(
-                            "已完成 {} 个文件，输出到 {}",
+                            "{} 个文件 · {}",
                             report.completed,
-                            report.output_dir.display()
+                            abbreviate_home(&report.output_dir)
                         ),
                         tone: Tone::Ok,
                     });
@@ -667,7 +738,7 @@ fn apply_event(
                 Err(error) => {
                     let cancelled = error.is_cancelled();
                     status.set(Status {
-                        text: if cancelled { "已取消" } else { "提取失败" }.into(),
+                        text: if cancelled { "已取消" } else { "解压失败" }.into(),
                         detail: error.to_string(),
                         tone: if cancelled { Tone::Ok } else { Tone::Error },
                     });
@@ -689,6 +760,21 @@ fn set_window_title(archive_name: &str) {
     if let Some(display) = AppDisplayHandleHolder::current() {
         display.set_window_title(&format!("{archive_name} — MugenZip"));
     }
+}
+
+/// `~/Downloads` instead of `/Users/someone/Downloads`: the action bar is
+/// about the location, not the machine's home directory.
+fn abbreviate_home(path: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if let Some(home) = home {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            if rest.as_os_str().is_empty() {
+                return "~".into();
+            }
+            return format!("~/{}", rest.display());
+        }
+    }
+    path.display().to_string()
 }
 
 fn load_archive(path: &Path) -> engine::Result<LoadedArchive> {
