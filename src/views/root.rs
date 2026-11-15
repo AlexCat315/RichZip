@@ -30,6 +30,7 @@ use cove_ui::composition::{
 use cove_ui::core::scene::{Align, FlexDirection, Justify, Wrap};
 use cove_ui::core::Color;
 
+use super::dashed::DashedBorder;
 use crate::browser::FileItem;
 use crate::model::{
     AppModel, LoadedArchive, PackageItem, Phase, Tone, ARCHIVE_EXTENSIONS,
@@ -397,7 +398,11 @@ fn drop_invitation(model: Rc<AppModel>) -> AnyView {
         )
         .frame(None, None, Some(DROP_WIDTH), Some(DROP_HEIGHT), None, None)
         .corner_radius(12.0)
-        .semantic_border(SemanticColorRef::border(), 1.0)
+        .modifier(DashedBorder {
+            color: theme::drop_stroke(),
+            width: 1.0,
+            radius: 12.0,
+        })
         .semantic_background(SemanticColorRef::surface())
         .clipped(),
     );

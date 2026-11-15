@@ -16,6 +16,13 @@ fn alpha(r: u8, g: u8, b: u8, a: u8) -> Color {
     Color::from_rgba8(r, g, b, a)
 }
 
+/// The empty state's dashed plate edge: one step darker than the card hairline
+/// so the dashes survive at 1pt, but never dark enough to read as a control
+/// border.
+pub fn drop_stroke() -> Color {
+    alpha(0xB5, 0xB0, 0xA2, 0xFF)
+}
+
 pub fn paper() -> Theme {
     let mut theme = Theme::default_light();
     let c = &mut theme.colors;
