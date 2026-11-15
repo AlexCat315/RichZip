@@ -94,6 +94,30 @@ impl ArchiveBrowser {
             .collect()
     }
 
+    /// Every folder in the archive, flattened and depth-first, so the sidebar
+    /// can list structure without repeating the file table's contents.
+    pub fn folders(&self) -> Vec<FileItem> {
+        let mut folders: Vec<FileItem> = Vec::new();
+        for path in self.children.keys() {
+            if path.is_empty() {
+                continue;
+            }
+            let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+            folders.push(FileItem {
+                id: path.clone(),
+                name,
+                ext: String::new(),
+                size: "—".to_owned(),
+                modified: "—".to_owned(),
+                path: path.clone(),
+                folder: true,
+                bytes: 0,
+            });
+        }
+        folders.sort_by_cached_key(|item| item.path.to_lowercase());
+        folders
+    }
+
     /// Every file entry with its byte size, for selection accounting.
     pub fn all_entries(&self) -> Vec<(String, u64)> {
         let mut entries = Vec::new();
