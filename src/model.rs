@@ -14,11 +14,12 @@ use cove_ui::core::scene::{ClipboardHolder, FilePicker, FilePickerFilter, Folder
 use cove_ui::core::work;
 use cove_ui::hosts::desktop::application::composition::AppDisplayHandleHolder;
 
-use crate::engine::{
+use mugenzip_core as engine;
+use mugenzip_core::{
     self, ArchiveEntry, ArchiveError, ExtractReport, ExtractionProgress, format_size, open_archive,
 };
 
-use super::browser::{self, ArchiveBrowser, FileItem};
+use crate::browser::{self, ArchiveBrowser, FileItem};
 
 pub const ARCHIVE_EXTENSIONS: [&str; 10] = [
     "zip", "7z", "rar", "tar", "gz", "tgz", "cbz", "cbr", "bz2", "xz",

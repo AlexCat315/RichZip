@@ -1,34 +1,12 @@
-mod browser;
-mod model;
-mod theme;
-mod view;
-
 use std::rc::Rc;
 
-use cove_ui::{
-    ApplicationLaunch, NativeMenu, NativeMenuAction, NativeMenuBar, NativeMenuKeyModifiers,
-};
+use cove_ui::{NativeMenu, NativeMenuAction, NativeMenuBar, NativeMenuKeyModifiers};
 
-pub fn application() -> ApplicationLaunch {
-    let model = Rc::new(model::AppModel::new());
-    let root = view::RootView {
-        model: model.clone(),
-    };
-    ApplicationLaunch::new(root)
-        .configure(|app| {
-            app.window.title = "MugenZip".into();
-            app.window.width = 1180;
-            app.window.height = 760;
-            app.window.min_width = 940;
-            app.window.min_height = 620;
-        })
-        .menu_bar(menu_bar(model))
-        .diagnostics(cove_ui::hosts::desktop::diagnostics::devtools::factory())
-}
+use crate::model::AppModel;
 
 /// On Windows this mounts Cove's immersive title bar (custom caption buttons,
 /// drag region, synthetic resize border); on macOS it installs the AppKit menu.
-fn menu_bar(model: Rc<model::AppModel>) -> NativeMenuBar {
+pub fn menu_bar(model: Rc<AppModel>) -> NativeMenuBar {
     let open = model.clone();
     let extract = model.clone();
     let choose = model.clone();

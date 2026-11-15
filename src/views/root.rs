@@ -24,10 +24,10 @@ use cove_ui::composition::{
 };
 use cove_ui::core::Color;
 
-use super::browser::FileItem;
-use super::model::{AppModel, ARCHIVE_EXTENSIONS, LoadedArchive, Phase, Tone, file_name};
-use super::theme;
-use crate::engine::format_size;
+use crate::browser::FileItem;
+use crate::model::{AppModel, ARCHIVE_EXTENSIONS, LoadedArchive, Phase, Tone, file_name};
+use crate::theme;
+use mugenzip_core::format_size;
 
 const TOP_BAR: f32 = 54.0;
 const SIDEBAR_WIDTH: f32 = 208.0;

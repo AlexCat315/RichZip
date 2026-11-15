@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use crate::engine::{ArchiveEntry, EntryKind, format_size};
+use mugenzip_core::{ArchiveEntry, EntryKind, format_size};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileItem {
