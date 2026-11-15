@@ -148,6 +148,9 @@ pub struct AppModel {
     pub progress: State<Progress>,
     pub status: State<Status>,
     pub drop_targeted: State<bool>,
+    /// Where the divider rests, as a fraction of the body width. The user drags
+    /// it; nothing else in the app writes it.
+    pub sidebar_fraction: State<f32>,
     /// Archives opened this session, newest first, for the empty state.
     pub recent: State<Vec<PathBuf>>,
     task: Rc<RefCell<TaskSlot>>,
@@ -171,6 +174,7 @@ impl AppModel {
         let progress = State::new(Progress::default());
         let status = State::new(Status::default());
         let drop_targeted = State::new(false);
+        let sidebar_fraction = State::new(0.20);
         let recent = State::new(Vec::new());
         let task = Rc::new(RefCell::new(TaskSlot::default()));
 
@@ -218,6 +222,7 @@ impl AppModel {
             progress,
             status,
             drop_targeted,
+            sidebar_fraction,
             recent,
             task,
             sender,
@@ -242,6 +247,7 @@ impl AppModel {
             DynamicField::state("progress", &self.progress),
             DynamicField::state("status", &self.status),
             DynamicField::state("dropTargeted", &self.drop_targeted),
+            DynamicField::state("sidebarFraction", &self.sidebar_fraction),
             DynamicField::state("recent", &self.recent),
         ]
     }

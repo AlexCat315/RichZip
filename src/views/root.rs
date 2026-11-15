@@ -6,7 +6,6 @@
 use std::cmp::Ordering;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use cove_ui::compose::adaptive::SurfaceEnvironment;
 use cove_ui::compose::modifiers::layout::EdgeInsets;
@@ -14,6 +13,9 @@ use cove_ui::compose::modifiers::style::AppearanceExt;
 use cove_ui::compose::prelude::*;
 use cove_ui::compose::primitives::data::table::{ColumnVisibility, ComparisonResult};
 use cove_ui::compose::primitives::feedback::ProgressView;
+use cove_ui::compose::primitives::layout::{
+    ScrollView, SplitAxis, SplitConstraints, SplitView,
+};
 use cove_ui::compose::primitives::media::ui_icon_catalog::{action, data, file, media, navigation};
 use cove_ui::compose::theme::styles::buttons::{
     ButtonStyleViewExt, GhostButtonStyle, PlainButtonStyle,
@@ -32,7 +34,6 @@ use crate::theme;
 use mugenzip_core::format_size;
 
 const TOOLBAR: f32 = 56.0;
-const SIDEBAR: f32 = 232.0;
 const CRUMB_BAR: f32 = 34.0;
 const PROGRESS_BAR: f32 = 34.0;
 const GUTTER: f32 = 20.0;
@@ -85,16 +86,32 @@ impl View for RootView {
 /// row stays on top, only the middle swaps between the archive and the
 /// "open something" invitation.
 fn workspace(model: Rc<AppModel>, safe_top: f32) -> AnyView {
+    // Same shell as the Gallery: the sidebar is not painted at all, so the
+    // window's own material is what you see behind it; the content sits on one
+    // floating card. The split's divider lane is invisible — the card's edge
+    // does the separating — but it still drags the fraction.
+    let card = AnyView::new(
+        AnyView::new(content(model.clone(), safe_top))
+            .padding_insets(EdgeInsets::new(8.0, 0.0, 8.0, 8.0)),
+    )
+    .semantic_background(SemanticColorRef::background())
+    .corner_radius(14.0)
+    .semantic_border(SemanticColorRef::border(), 0.5)
+    .clipped();
+
     AnyView::new(
-        Row::new(
-            VerticalAlignment::Center,
-            0.0,
-            AnyView::new(views!(
-                sidebar(model.clone(), safe_top),
-                Divider::vertical(),
-                content(model, safe_top),
-            )),
+        SplitView::resizable(
+            SplitAxis::Horizontal,
+            model.sidebar_fraction.binding(),
+            sidebar(model.clone(), safe_top),
+            card,
         )
+        .divider_thickness(0.0)
+        .constraints(SplitConstraints {
+            minimum_first: 180.0,
+            minimum_second: 520.0,
+            ..SplitConstraints::new(0.12, 0.34)
+        })
         .fill(),
     )
 }
@@ -161,16 +178,23 @@ fn sidebar(model: Rc<AppModel>, safe_top: f32) -> AnyView {
         }
     }
 
-    let list = AnyView::new(vstack(0.0, rows))
-        .padding_insets(EdgeInsets::new(safe_top + 16.0, 8.0, 12.0, 8.0))
-        .fill_width()
-        .flex(1.0);
+    // The sections can outgrow the pane — a long queue or a deep history — so
+    // they scroll inside it instead of being clipped by a fixed box.
+    let list = AnyView::new(
+        ScrollView::vertical(
+            AnyView::new(vstack(0.0, rows))
+                .padding_insets(EdgeInsets::new(safe_top + 16.0, 8.0, 12.0, 8.0))
+                .fill_width(),
+        )
+        .combine_accessibility(false),
+    )
+    .fill_width()
+    .fill_height();
 
     AnyView::new(
         Column::new(HorizontalAlignment::Leading, 0.0, AnyView::new(list))
-            .frame_width(SIDEBAR)
-            .fill_height()
-            .semantic_background(SemanticColorRef::surface_variant()),
+            .fill_width()
+            .fill_height(),
     )
 }
 
@@ -213,7 +237,7 @@ fn job_card(archive: &LoadedArchive) -> AnyView {
             )),
         )
         .padding_insets(EdgeInsets::new(9.0, 9.0, 10.0, 9.0))
-        .frame_width(SIDEBAR - 24.0)
+        .fill_width()
         .corner_radius(9.0)
         .semantic_background(SemanticColorRef::surface()),
     )
@@ -277,7 +301,7 @@ fn active_row(model: Rc<AppModel>, archive: &LoadedArchive) -> AnyView {
             )),
         )
         .padding_insets(EdgeInsets::new(8.0, 9.0, 9.0, 9.0))
-        .frame_width(SIDEBAR - 24.0)
+        .fill_width()
         .corner_radius(8.0)
         .semantic_background(SemanticColorRef::surface()),
     )
@@ -315,7 +339,7 @@ fn history_row(record: ExtractRecord) -> AnyView {
             )),
         )
         .padding_insets(EdgeInsets::new(6.0, 9.0, 6.0, 9.0))
-        .frame_width(SIDEBAR - 24.0),
+        .fill_width(),
     )
 }
 
@@ -1008,7 +1032,7 @@ fn section_label(title: &str, top: f32) -> AnyView {
                 .semantic_font(SemanticFontRef::caption())
                 .semantic_foreground(SemanticColorRef::on_surface_muted()),
         )
-        .frame_width(SIDEBAR - 44.0)
+        .fill_width()
         .padding_insets(EdgeInsets::new(top, 22.0, 8.0, 0.0)),
     )
 }
@@ -1020,7 +1044,7 @@ fn hint_row(text: &str) -> AnyView {
                 .semantic_font(SemanticFontRef::caption())
                 .semantic_foreground(SemanticColorRef::on_surface_muted()),
         )
-        .frame_width(SIDEBAR - 44.0)
+        .fill_width()
         .padding_insets(EdgeInsets::new(2.0, 22.0, 8.0, 0.0)),
     )
 }
