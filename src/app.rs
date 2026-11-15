@@ -2,10 +2,13 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use cove_ui::ApplicationLaunch;
+use cove_ui::compose::theme::ThemeViewExt;
+use cove_ui::composition::{AnyView, DynamicField, Scope, View};
 use cove_ui::hosts::shell_services::{self, ShellVerb};
 
 use crate::menu_bar::menu_bar;
 use crate::model::AppModel;
+use crate::theme;
 use crate::views::RootView;
 
 pub fn application() -> ApplicationLaunch {
@@ -31,6 +34,12 @@ pub fn application() -> ApplicationLaunch {
             }
         },
     );
+
+    // The theme wrapper sits outside the menu bar and the body, so the Windows
+    // immersive title bar and its menu items are descendants of the same theme
+    // provider. Attaching `.theme(..)` inside the root view would leave that
+    // sibling title bar on the framework's default dark fallback.
+    let themed = model.clone();
     ApplicationLaunch::new(root)
         .configure(|app| {
             app.window.title = "MugenZip".into();
@@ -39,6 +48,27 @@ pub fn application() -> ApplicationLaunch {
             app.window.min_width = 940;
             app.window.min_height = 620;
         })
+        .wrap_content(move |content| ThemedContent {
+            model: themed.clone(),
+            content,
+        })
         .menu_bar(menu_bar(model))
         .diagnostics(cove_ui::hosts::desktop::diagnostics::devtools::factory())
+}
+
+/// App-wide theme provider, mounted for the whole window chrome and content.
+struct ThemedContent {
+    model: Rc<AppModel>,
+    content: AnyView,
+}
+
+impl View for ThemedContent {
+    fn body(&self, _cx: &Scope) -> AnyView {
+        let theme = theme::resolve(self.model.theme_mode());
+        AnyView::new(AnyView::new(self.content.clone()).theme(theme))
+    }
+
+    fn dynamic_properties(&self) -> Vec<DynamicField> {
+        vec![DynamicField::state("themeMode", &self.model.theme_mode)]
+    }
 }

@@ -8,6 +8,25 @@
 use cove_ui::compose::theme::{RadiusScale, TextStyleToken, Theme, Typography};
 use cove_ui::core::{Color, Font, FontWeight};
 
+/// The two authored appearances. `RadioGroup` requires the value to be
+/// hashable and shareable, so the enum carries those derives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ThemeMode {
+    #[default]
+    Light,
+    Dark,
+}
+
+impl ThemeMode {
+    /// Localized label shown in the settings picker.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Light => "浅色",
+            Self::Dark => "暗色",
+        }
+    }
+}
+
 fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgba8(r, g, b, 255)
 }
@@ -73,6 +92,67 @@ pub fn paper() -> Theme {
     theme.radius = RadiusScale::new(0.0, 4.0, 6.0, 10.0, 14.0, 9999.0);
     theme.typography = type_scale();
     theme
+}
+
+/// "Ink & Pine": the dark counterpart to paper. Warm charcoal surfaces keep
+/// the same quiet, paper-like reading; the pine accent is lifted so it stays
+/// legible on a dark ground, and labels step down through the same three
+/// foreground levels.
+pub fn ink() -> Theme {
+    let mut theme = Theme::default_dark();
+    let c = &mut theme.colors;
+
+    // Warm charcoal canvas, one faint step between card and backdrop.
+    c.background = rgb(0x17, 0x16, 0x13);
+    c.surface = rgb(0x21, 0x1F, 0x1C);
+    c.surface_variant = rgb(0x2B, 0x29, 0x25);
+    c.surface_pressed = rgb(0x35, 0x32, 0x2C);
+    c.surface_sunken = rgb(0x17, 0x16, 0x13);
+    c.surface_raised = rgb(0x26, 0x24, 0x20);
+    c.surface_floating = rgb(0x26, 0x24, 0x20);
+    c.surface_overlay = rgb(0x26, 0x24, 0x20);
+
+    c.on_background = rgb(0xEC, 0xE8, 0xDE);
+    c.on_surface = rgb(0xEC, 0xE8, 0xDE);
+    c.on_surface_variant = rgb(0xC6, 0xC2, 0xB6);
+    c.on_surface_muted = rgb(0x96, 0x92, 0x7F);
+
+    // Pine, lifted for a dark ground; the label above it stays near-black.
+    c.accent = rgb(0x5A, 0xA7, 0x8D);
+    c.accent_hover = rgb(0x6F, 0xB8, 0x9F);
+    c.accent_pressed = rgb(0x4A, 0x93, 0x7A);
+    c.on_accent = rgb(0x10, 0x21, 0x1B);
+    c.accent_muted = alpha(0x5A, 0xA7, 0x8D, 0x26);
+    c.accent_secondary = rgb(0xB5, 0x8A, 0x5A);
+
+    c.state_layer_hover = alpha(0xFF, 0xFF, 0xFF, 0x14);
+    c.state_layer_pressed = alpha(0xFF, 0xFF, 0xFF, 0x1C);
+    c.state_layer_selected = alpha(0x5A, 0xA7, 0x8D, 0x33);
+
+    c.success = rgb(0x63, 0xBE, 0x82);
+    c.warning = rgb(0xD9, 0xA4, 0x57);
+    c.error = rgb(0xE8, 0x71, 0x68);
+    c.info = rgb(0x5A, 0xA7, 0x8D);
+
+    c.border = rgb(0x38, 0x35, 0x2D);
+    c.border_strong = rgb(0x50, 0x4C, 0x40);
+    c.divider = rgb(0x30, 0x2D, 0x27);
+    c.focus_ring = alpha(0x5A, 0xA7, 0x8D, 0x8C);
+    c.selection = alpha(0x5A, 0xA7, 0x8D, 0x55);
+    c.overlay = alpha(0x00, 0x00, 0x00, 0x66);
+
+    theme.radius = RadiusScale::new(0.0, 4.0, 6.0, 10.0, 14.0, 9999.0);
+    theme.typography = type_scale();
+    theme
+}
+
+/// Resolves the authored theme for a mode. Kept in one place so the launch
+/// wrapper and any preview share the same mapping.
+pub fn resolve(mode: ThemeMode) -> Theme {
+    match mode {
+        ThemeMode::Light => paper(),
+        ThemeMode::Dark => ink(),
+    }
 }
 
 /// One step denser than the stock scale: the list is the app, so its body

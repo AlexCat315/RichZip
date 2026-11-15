@@ -10,7 +10,7 @@ use cove_ui::compose::adaptive::SurfaceEnvironment;
 use cove_ui::compose::modifiers::layout::EdgeInsets;
 use cove_ui::compose::modifiers::style::AppearanceExt;
 use cove_ui::compose::prelude::*;
-use cove_ui::compose::primitives::controls::Toggle;
+use cove_ui::compose::primitives::controls::{RadioGroup, RadioOption, Toggle};
 use cove_ui::compose::primitives::data::table::{ColumnVisibility, ComparisonResult};
 use cove_ui::compose::primitives::feedback::ProgressView;
 use cove_ui::compose::primitives::layout::{
@@ -22,7 +22,6 @@ use cove_ui::compose::primitives::overlays::{Modal, ModalOptions};
 use cove_ui::compose::theme::styles::buttons::{
     ButtonStyleViewExt, GhostButtonStyle, PlainButtonStyle,
 };
-use cove_ui::compose::theme::ThemeViewExt;
 use cove_ui::composition::{
     BoxView, DynamicField, EmptyView, HorizontalAlignment, Scope, Spacer, TupleView,
     VerticalAlignment, views,
@@ -35,7 +34,7 @@ use crate::browser::FileItem;
 use crate::model::{
     AppModel, LoadedArchive, PackageItem, Phase, Tone, ARCHIVE_EXTENSIONS,
 };
-use crate::theme;
+use crate::theme::{self, ThemeMode};
 use mugenzip_core::format_size;
 
 const TOOLBAR: f32 = 56.0;
@@ -80,8 +79,7 @@ impl View for RootView {
             .shows_chrome(false)
             .is_targeted(model.drop_targeted.binding())
             .on_targeted(move |is_targeted| targeted.drop_targeted.set(is_targeted))
-            .fill()
-            .theme(theme::paper()),
+            .fill(),
         );
 
         // The settings sheet is a portal: it covers the window without taking
@@ -112,7 +110,6 @@ impl View for RootView {
                 )
                 .fill(),
             )))
-            .theme(theme::paper()),
         )
     }
 
@@ -1384,7 +1381,7 @@ fn settings_panel(model: Rc<AppModel>) -> AnyView {
     let appearance_section = settings_section(
         "外观",
         vec![
-            settings_info("主题", "纸白", "深色主题与自定义配色随后加入"),
+            settings_theme_row(model.clone()),
             settings_info("字体大小", "跟随系统", "字号调节随后加入"),
         ],
     );
@@ -1497,6 +1494,48 @@ fn settings_toggle(title: &'static str, hint: &'static str, binding: cove_ui::co
                     .flex(1.0),
                 ),
                 AnyView::new(Toggle::new(binding)),
+            ]),
+        )
+        .fill_width(),
+    )
+}
+
+/// Light/dark appearance picker. The group owns the `theme_mode` binding
+/// directly; the wrapper theme provider re-resolves on every change.
+fn settings_theme_row(model: Rc<AppModel>) -> AnyView {
+    let options = vec![
+        RadioOption::new(ThemeMode::Light, ThemeMode::Light.title()),
+        RadioOption::new(ThemeMode::Dark, ThemeMode::Dark.title()),
+    ];
+    let picker = AnyView::new(
+        RadioGroup::try_new(model.theme_mode.binding(), options)
+            .expect("light and dark are distinct theme modes")
+            .horizontal(true),
+    );
+    AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            12.0,
+            AnyView::new(views![
+                AnyView::new(
+                    Column::new(
+                        HorizontalAlignment::Leading,
+                        2.0,
+                        AnyView::new(views!(
+                            Text::new("主题")
+                                .semantic_font(SemanticFontRef::body())
+                                .semantic_foreground(SemanticColorRef::on_surface()),
+                            Text::new("在浅色纸白与暗色墨色之间切换")
+                                .line_limit(Some(2))
+                                .truncating_tail()
+                                .semantic_font(SemanticFontRef::caption())
+                                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                        )),
+                    )
+                    .frame_min_width(0.0)
+                    .flex(1.0),
+                ),
+                picker,
             ]),
         )
         .fill_width(),

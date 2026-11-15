@@ -20,6 +20,7 @@ use mugenzip_core::{
 };
 
 use crate::browser::{self, ArchiveBrowser, FileItem};
+use crate::theme::ThemeMode;
 
 pub const ARCHIVE_EXTENSIONS: [&str; 10] = [
     "zip", "7z", "rar", "tar", "gz", "tgz", "cbz", "cbr", "bz2", "xz",
@@ -191,6 +192,9 @@ pub struct AppModel {
     pub settings_open: State<bool>,
     /// Show the output folder in the file manager once extraction finishes.
     pub reveal_after_extract: State<bool>,
+    /// Light or dark appearance, chosen in the settings sheet. `None` resolves
+    /// to the light paper theme until the user picks.
+    pub theme_mode: State<Option<ThemeMode>>,
     task: Rc<RefCell<TaskSlot>>,
     sender: work::UiSender<TaskEvent>,
     hooks_installed: Cell<bool>,
@@ -220,6 +224,7 @@ impl AppModel {
         let package_selection = State::new(BTreeSet::new());
         let settings_open = State::new(false);
         let reveal_after_extract = State::new(true);
+        let theme_mode = State::new(Some(ThemeMode::Light));
         let reveal_for_events = reveal_after_extract.clone();
         let location_for_events = location.clone();
         let task = Rc::new(RefCell::new(TaskSlot::default()));
@@ -278,6 +283,7 @@ impl AppModel {
             package_selection,
             settings_open,
             reveal_after_extract,
+            theme_mode,
             task,
             sender,
             hooks_installed: Cell::new(false),
@@ -308,6 +314,7 @@ impl AppModel {
             DynamicField::state("packageSelection", &self.package_selection),
             DynamicField::state("settingsOpen", &self.settings_open),
             DynamicField::state("revealAfterExtract", &self.reveal_after_extract),
+            DynamicField::state("themeMode", &self.theme_mode),
         ]
     }
 
@@ -608,6 +615,11 @@ impl AppModel {
 
     pub fn close_settings(&self) {
         self.settings_open.set(false);
+    }
+
+    /// The active appearance, defaulting to light before any choice is made.
+    pub fn theme_mode(&self) -> ThemeMode {
+        self.theme_mode.get().unwrap_or_default()
     }
 
     pub fn open_dialog(&self) {
