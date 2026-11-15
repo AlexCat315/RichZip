@@ -118,6 +118,10 @@ fn workspace(model: Rc<AppModel>, safe_top: f32) -> AnyView {
             card,
         )
         .divider_thickness(0.0)
+        // The handle always paints its own 1pt hairline, whatever the
+        // thickness says — clear the color so the card edge is the only
+        // boundary you see, while the 7pt lane still drags.
+        .divider_color(Color::CLEAR)
         .constraints(SplitConstraints {
             minimum_first: 180.0,
             minimum_second: 520.0,
