@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "cove-agent"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "cove-alloc"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "libc",
  "thiserror",
@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "cove-browser"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cove-composition",
  "cove-core",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "cove-composition"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cove-composition-macros",
  "cove-core",
@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "cove-composition-macros"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "cove-core"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cc",
  "cove-platform",
@@ -367,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "cove-debugger"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cc",
  "libc",
@@ -378,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "cove-devtools"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "cove-agent",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "cove-devtools-cli"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "cove-devtools-protocol"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -433,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "cove-examples"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cove-alloc",
  "cove-composition",
@@ -454,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "cove-graphics"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "cove-hosts"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cove-alloc",
  "cove-composition",
@@ -503,7 +503,7 @@ dependencies = [
 
 [[package]]
 name = "cove-http"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cc",
  "thiserror",
@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "cove-imaging"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cc",
  "cove-core",
@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "cove-logging"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cc",
  "cove-system",
@@ -532,7 +532,7 @@ dependencies = [
 
 [[package]]
 name = "cove-media"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cove-logging",
  "libc",
@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "cove-native-build"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cc",
  "cmake",
@@ -551,14 +551,14 @@ dependencies = [
 
 [[package]]
 name = "cove-platform"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "cove-profiling"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "addr2line",
  "libc",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "cove-runtime"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cc",
  "cove-core",
@@ -583,7 +583,7 @@ dependencies = [
 
 [[package]]
 name = "cove-shell"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "block2",
  "cc",
@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "cove-system"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cc",
  "libc",
@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "cove-terminal"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cc",
  "cove-composition",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "cove-text"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cc",
  "cove-core",
@@ -636,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "cove-ui"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cove-browser",
  "cove-composition",
@@ -658,7 +658,7 @@ dependencies = [
 
 [[package]]
 name = "cove-ui-addons"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cove-composition",
  "cove-core",
@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "cove-ui-compose"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "cc",
  "cove-composition",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "cove-watch"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "libc",
 ]

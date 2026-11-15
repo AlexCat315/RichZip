@@ -4,7 +4,7 @@ use std::rc::Rc;
 use cove_ui::compose::modifiers::layout::EdgeInsets;
 use cove_ui::compose::modifiers::style::AppearanceExt;
 use cove_ui::compose::prelude::*;
-use cove_ui::compose::primitives::data::data_table::{ColumnVisibility, ComparisonResult};
+use cove_ui::compose::primitives::data::table::{ColumnVisibility, ComparisonResult};
 use cove_ui::compose::primitives::media::ui_icon_catalog::{action, file, navigation, status};
 use cove_ui::compose::theme::styles::buttons::{
     ButtonStyleViewExt, GhostButtonStyle, PrimaryButtonStyle, SecondaryButtonStyle,
@@ -183,7 +183,7 @@ fn workspace(model: Rc<AppModel>) -> AnyView {
 }
 
 fn file_table(model: Rc<AppModel>) -> AnyView {
-    let mut options = DataTableOptions::default();
+    let mut options = TableOptions::default();
     options.selection = Some(Selection::single(model.selection.binding()));
     options.frozen_column_count = 1;
     options.layout = TableLayout {
@@ -191,10 +191,11 @@ fn file_table(model: Rc<AppModel>) -> AnyView {
         header_height: 34.0,
         is_striped: true,
         empty_title: "此目录为空".into(),
+        ..TableLayout::default()
     };
 
     let activate = model.clone();
-    let table = DataTable::from_records(model.rows(), |row: &FileItem| row.id.clone(), columns())
+    let table = Table::new(model.rows(), |row: &FileItem| row.id.clone(), columns())
         .expect("the file table columns are static with unique ids")
         .options(options)
         .on_activate(move |row: &FileItem| activate.activate(row))

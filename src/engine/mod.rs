@@ -10,7 +10,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub use safety::{ExtractionPlan, TaskWorkspace};
+pub use safety::ExtractionPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -29,24 +29,6 @@ pub struct ArchiveEntry {
 }
 
 impl ArchiveEntry {
-    pub fn file(name: String, size: u64, modified: String) -> Self {
-        Self {
-            name,
-            size,
-            modified,
-            kind: EntryKind::File,
-        }
-    }
-
-    pub fn directory(name: String, modified: String) -> Self {
-        Self {
-            name,
-            size: 0,
-            modified,
-            kind: EntryKind::Directory,
-        }
-    }
-
     pub fn is_file(&self) -> bool {
         self.kind == EntryKind::File
     }
@@ -57,7 +39,6 @@ pub struct ExtractionProgress {
     pub current: String,
     pub processed: u64,
     pub total: u64,
-    pub completed: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -89,13 +70,6 @@ impl ArchiveError {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled
-    }
-
-    pub fn context(self, context: &str) -> Self {
-        Self {
-            message: format!("{context}：{}", self.message),
-            cancelled: self.cancelled,
-        }
     }
 }
 
@@ -325,7 +299,6 @@ impl<'a> EntryProgress<'a> {
             current: self.current.clone(),
             processed: self.processed,
             total: self.total,
-            completed: self.completed,
         });
     }
 }
