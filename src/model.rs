@@ -72,8 +72,25 @@ pub enum Tone {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExtractRecord {
     pub name: String,
+    /// Home-relative, for display.
     pub destination: String,
+    /// The real output folder, for "在访达显示".
+    pub output_dir: PathBuf,
     pub at: String,
+}
+
+/// One archive sitting in the folder currently being browsed. The window opens
+/// on a location, not on a package: a folder holds several archives and the
+/// user usually wants to pick one — or several — out of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PackageItem {
+    pub path: PathBuf,
+    pub name: String,
+    pub size: String,
+    pub bytes: u64,
+    pub modified: String,
+    /// Where this package was last unpacked to, when it was this session.
+    pub extracted_to: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -125,6 +142,13 @@ enum TaskEvent {
         generation: u64,
         result: Result<ExtractReport, ArchiveError>,
     },
+    /// A run over several packages: one task, one thread, one summary.
+    BatchFinished {
+        generation: u64,
+        ok: usize,
+        failed: Vec<String>,
+        records: Vec<ExtractRecord>,
+    },
 }
 
 #[derive(Clone)]
@@ -153,6 +177,20 @@ pub struct AppModel {
     pub sidebar_fraction: State<f32>,
     /// Archives opened this session, newest first, for the empty state.
     pub recent: State<Vec<PathBuf>>,
+    /// The folder the window is looking at: 下载, 桌面, or anything the user
+    /// added. The sidebar switches between these; the main area lists what is
+    /// inside one of them.
+    pub location: State<Option<PathBuf>>,
+    /// The archives found in `location`, newest first.
+    pub packages: State<Vec<PackageItem>>,
+    /// The packages ticked in the list, for a batch extraction.
+    /// Package paths ticked in the list, keyed by their string form so the
+    /// table's selection binding can own them directly.
+    pub package_selection: State<BTreeSet<String>>,
+    /// The settings sheet is open.
+    pub settings_open: State<bool>,
+    /// Show the output folder in the file manager once extraction finishes.
+    pub reveal_after_extract: State<bool>,
     task: Rc<RefCell<TaskSlot>>,
     sender: work::UiSender<TaskEvent>,
     hooks_installed: Cell<bool>,
@@ -176,6 +214,14 @@ impl AppModel {
         let drop_targeted = State::new(false);
         let sidebar_fraction = State::new(0.20);
         let recent = State::new(Vec::new());
+        let location = State::new(None);
+        let packages = State::new(Vec::new());
+        let packages_for_events = packages.clone();
+        let package_selection = State::new(BTreeSet::new());
+        let settings_open = State::new(false);
+        let reveal_after_extract = State::new(true);
+        let reveal_for_events = reveal_after_extract.clone();
+        let location_for_events = location.clone();
         let task = Rc::new(RefCell::new(TaskSlot::default()));
 
         let sender = {
@@ -202,6 +248,9 @@ impl AppModel {
                     &phase,
                     &progress,
                     &status,
+                    &location_for_events,
+                    &packages_for_events,
+                    &reveal_for_events,
                 );
             });
             task.borrow_mut().receiver = Some(receiver);
@@ -224,6 +273,11 @@ impl AppModel {
             drop_targeted,
             sidebar_fraction,
             recent,
+            location,
+            packages,
+            package_selection,
+            settings_open,
+            reveal_after_extract,
             task,
             sender,
             hooks_installed: Cell::new(false),
@@ -249,6 +303,11 @@ impl AppModel {
             DynamicField::state("dropTargeted", &self.drop_targeted),
             DynamicField::state("sidebarFraction", &self.sidebar_fraction),
             DynamicField::state("recent", &self.recent),
+            DynamicField::state("location", &self.location),
+            DynamicField::state("packages", &self.packages),
+            DynamicField::state("packageSelection", &self.package_selection),
+            DynamicField::state("settingsOpen", &self.settings_open),
+            DynamicField::state("revealAfterExtract", &self.reveal_after_extract),
         ]
     }
 
@@ -302,6 +361,255 @@ impl AppModel {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // locations and the packages inside them
+    // -----------------------------------------------------------------------
+
+    /// The places the sidebar offers: the host's known folders, in the order
+    /// Finder puts them.
+    pub fn locations(&self) -> Vec<(String, PathBuf)> {
+        browser::known_dirs()
+    }
+
+    /// First paint: look at 下载 so the window opens on something real instead
+    /// of an empty frame. Later paints leave the user's choice alone.
+    pub fn bootstrap_location(&self) {
+        if self.location.get().is_some() {
+            return;
+        }
+        let dirs = self.locations();
+        let start = dirs
+            .iter()
+            .find(|(label, _)| label == "下载")
+            .or_else(|| dirs.first())
+            .map(|(_, path)| path.clone())
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+        if let Some(start) = start {
+            self.set_location(start);
+        }
+    }
+
+    pub fn set_location(&self, path: PathBuf) {
+        self.location.set(Some(path));
+        self.package_selection.set(BTreeSet::new());
+        self.refresh_packages();
+    }
+
+    /// Re-reads the current folder. Called on location change and whenever a
+    /// package's state could have moved (an extraction finished).
+    pub fn refresh_packages(&self) {
+        let Some(dir) = self.location.get() else {
+            return;
+        };
+        let history = self.history.get();
+        self.packages.set(scan_packages(&dir, &history));
+    }
+
+    /// The package rows after the search filter — the browse list's search box.
+    pub fn visible_packages(&self) -> Vec<PackageItem> {
+        let query = self.search.get().string_value().to_lowercase();
+        let packages = self.packages.get();
+        if query.is_empty() {
+            return packages;
+        }
+        packages
+            .into_iter()
+            .filter(|item| item.name.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    /// Back out of a package to the folder it came from. The list is re-read
+    /// on the way out so a fresh extraction shows up as 已解压.
+    pub fn close_archive(&self) {
+        if self.is_busy() {
+            return;
+        }
+        self.archive.set(None);
+        self.directory.set(String::new());
+        self.selection.set(BTreeSet::new());
+        self.search.set(TextBuffer::empty());
+        self.phase.set(Phase::Idle);
+        set_window_title("MugenZip");
+        self.refresh_packages();
+    }
+
+    pub fn last_extraction(&self) -> Option<ExtractRecord> {
+        self.history.get().into_iter().next()
+    }
+
+    /// "在访达显示" / "在资源管理器显示": open the folder the last run wrote to.
+    pub fn reveal_last(&self) {
+        if let Some(record) = self.last_extraction() {
+            reveal_in_file_manager(&record.output_dir);
+        }
+    }
+
+    pub fn choose_location(&self) {
+        let fallback = self
+            .location
+            .get()
+            .map(|path| path.to_string_lossy().into_owned());
+        let model = self.clone();
+        FolderPicker::request(fallback.as_deref(), Box::new(move |chosen| {
+            if let Some(directory) = chosen {
+                model.set_location(PathBuf::from(directory));
+            }
+        }));
+    }
+
+    /// The name the toolbar shows: a known folder keeps its short label, a
+    /// folder the user added shows its own last component.
+    pub fn location_name(&self) -> String {
+        let Some(location) = self.location.get() else {
+            return "位置".into();
+        };
+        for (label, path) in self.locations() {
+            if path == location {
+                return label;
+            }
+        }
+        file_name(&location)
+    }
+
+    /// "6 个压缩包 · 共 1.2 GB"
+    pub fn location_summary(&self) -> String {
+        let packages = self.packages.get();
+        if packages.is_empty() {
+            return "没有压缩包".into();
+        }
+        let bytes = packages.iter().map(|item| item.bytes).sum::<u64>();
+        format!(
+            "{} 个压缩包 · 共 {}",
+            packages.len(),
+            format_size(bytes)
+        )
+    }
+
+    /// How many archives a location holds, for the sidebar count. Only the
+    /// directory is read; nothing is opened.
+    pub fn package_count(&self, directory: &Path) -> usize {
+        count_archives(directory)
+    }
+
+    pub fn package_key(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    pub fn clear_packages(&self) {
+        self.package_selection.set(BTreeSet::new());
+    }
+
+    pub fn selected_packages(&self) -> Vec<PackageItem> {
+        let selection = self.package_selection.get();
+        self.packages
+            .get()
+            .into_iter()
+            .filter(|item| selection.contains(&Self::package_key(&item.path)))
+            .collect()
+    }
+
+    pub fn package_scope(&self) -> (usize, u64) {
+        let selected = self.selected_packages();
+        (
+            selected.len(),
+            selected.iter().map(|item| item.bytes).sum::<u64>(),
+        )
+    }
+
+    /// Unpacks every ticked package, one after another in a single task: a
+    /// batch is one piece of work, so it gets one progress bar and one cancel.
+    pub fn batch_extract(&self) {
+        if self.is_busy() {
+            return;
+        }
+        let selected = self.selected_packages();
+        if selected.is_empty() {
+            return;
+        }
+        let destination = match self.destination.get().or_else(|| self.default_destination()) {
+            Some(destination) => destination,
+            None => {
+                self.choose_destination();
+                return;
+            }
+        };
+
+        let (generation, cancel) = self.begin_task();
+        self.phase.set(Phase::Extracting);
+        self.progress.set(Progress {
+            fraction: 0.0,
+            label: format!("0 / {} 项", selected.len()),
+            current_file: "正在准备…".into(),
+        });
+        self.status.set(Status {
+            text: "正在解压".into(),
+            detail: format!("{} 个压缩包 · {}", selected.len(), abbreviate_home(&destination)),
+            tone: Tone::Busy,
+        });
+
+        let sender = self.sender.clone();
+        let wrap = self.wrap_in_folder.get();
+        std::thread::spawn(move || {
+            let total = selected.len() as u64;
+            let mut ok = 0;
+            let mut failed: Vec<String> = Vec::new();
+            let mut records: Vec<ExtractRecord> = Vec::new();
+            for (index, package) in selected.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                sender.send(TaskEvent::Progress {
+                    generation,
+                    progress: ExtractionProgress {
+                        current: package.name.clone(),
+                        processed: index as u64,
+                        total,
+                    },
+                });
+                let base = engine::archive_base_name(&package.path);
+                let target = if wrap {
+                    engine::unique_output_dir(&destination.join(base))
+                } else {
+                    destination.clone()
+                };
+                let result = open_archive(&package.path).and_then(|mut archive| {
+                    archive.extract_entries(&target, &|_: &ArchiveEntry| true, false, &mut |_| {}, &cancel)
+                });
+                match result {
+                    Ok(report) => {
+                        ok += 1;
+                        records.push(ExtractRecord {
+                            name: package.name.clone(),
+                            destination: abbreviate_home(&report.output_dir),
+                            output_dir: report.output_dir.clone(),
+                            at: browser::format_timestamp(std::time::SystemTime::now()),
+                        });
+                    }
+                    Err(error) => {
+                        if error.is_cancelled() {
+                            break;
+                        }
+                        failed.push(format!("{}：{error}", package.name));
+                    }
+                }
+            }
+            sender.send(TaskEvent::BatchFinished {
+                generation,
+                ok,
+                failed,
+                records,
+            });
+        });
+    }
+
+    pub fn open_settings(&self) {
+        self.settings_open.set(true);
+    }
+
+    pub fn close_settings(&self) {
+        self.settings_open.set(false);
+    }
+
     pub fn open_dialog(&self) {
         if self.is_busy() {
             return;
@@ -351,60 +659,6 @@ impl AppModel {
             .collect()
     }
 
-    /// The selected entries in the current directory, for the action bar.
-    pub fn selected_items(&self) -> Vec<FileItem> {
-        let selection = self.selection.get();
-        self.current_items()
-            .into_iter()
-            .filter(|item| selection.contains(&item.id))
-            .collect()
-    }
-
-    /// The entries the current selection would extract, resolved through the
-    /// archive so a selected folder counts its whole subtree.
-    pub fn selection_scope(&self) -> (usize, u64) {
-        let selection = self.selection.get();
-        if selection.is_empty() {
-            let archive = self.archive.get();
-            return match archive {
-                Some(archive) => (archive.entry_count, archive.total_bytes),
-                None => (0, 0),
-            };
-        }
-        let prefixes: Vec<String> = selection.iter().map(|id| format!("{id}/")).collect();
-        let mut count = 0;
-        let mut bytes = 0_u64;
-        if let Some(archive) = self.archive.get() {
-            for entry in archive.browser.all_entries() {
-                let path = &entry.0;
-                if selection.contains(path) || prefixes.iter().any(|p| path.starts_with(p)) {
-                    count += 1;
-                    bytes = bytes.saturating_add(entry.1);
-                }
-            }
-        }
-        (count, bytes)
-    }
-
-    /// "解压全部 8 项" / "解压选中 3 项" — the primary button's label.
-    pub fn action_label(&self) -> String {
-        let selected = self.selection.get().len();
-        if selected == 0 {
-            let count = self.archive.get().map_or(0, |archive| archive.entry_count);
-            format!("解压全部 {count} 项")
-        } else {
-            format!("解压选中 {selected} 项")
-        }
-    }
-
-    /// The destination as the bar shows it: home-relative, never a raw path.
-    pub fn destination_label(&self) -> String {
-        let Some(destination) = self.destination.get() else {
-            return "未选择目标位置".into();
-        };
-        abbreviate_home(&destination)
-    }
-
     pub fn set_destination(&self, path: PathBuf) {
         self.destination.set(Some(path));
     }
@@ -435,7 +689,7 @@ impl AppModel {
 
     /// The single extraction entry point used by the action bar.
     pub fn extract(&self) {
-        let Some(destination) = self.destination.get() else {
+        let Some(destination) = self.destination.get().or_else(|| self.default_destination()) else {
             self.choose_destination();
             return;
         };
@@ -473,6 +727,13 @@ impl AppModel {
         self.selection.set(BTreeSet::new());
         self.search.set(TextBuffer::empty());
         self.destination.set(path.parent().map(|parent| parent.to_path_buf()));
+        if let Some(parent) = path.parent()
+            && self.location.get().as_deref() != Some(parent)
+        {
+            // Opening a package moves the window to the folder it came from, so
+            // the sidebar keeps telling the truth about where you are.
+            self.set_location(parent.to_path_buf());
+        }
         self.phase.set(Phase::Loading);
         self.drop_targeted.set(false);
         self.push_recent(path.clone());
@@ -495,11 +756,6 @@ impl AppModel {
         recent.insert(0, path);
         recent.truncate(4);
         self.recent.set(recent);
-    }
-
-    /// Re-opens an archive listed in the empty state.
-    pub fn open_recent(&self, path: PathBuf) {
-        self.open(path);
     }
 
     /// Extraction of one entry (and its subtree) into the visible destination.
@@ -581,13 +837,17 @@ impl AppModel {
     /// host's known folders. A destination picker, not a browser.
     pub fn destination_choices(&self) -> Vec<(String, PathBuf)> {
         let mut choices: Vec<(String, PathBuf)> = Vec::new();
-        if let Some(archive) = self.archive.get()
-            && let Some(folder) = archive.folder_dir()
-        {
-            let label = if self.wrap_in_folder.get() {
-                format!("当前文件夹/{}", engine::archive_base_name(&archive.path))
+        if let Some(folder) = self.default_destination() {
+            // The chip reads "解压到 HaHa", not "当前文件夹/HaHa": the folder
+            // the package came from is the default, so its own name is enough.
+            let label = if let Some(archive) = self.archive.get() {
+                if self.wrap_in_folder.get() {
+                    engine::archive_base_name(&archive.path)
+                } else {
+                    "当前文件夹".to_owned()
+                }
             } else {
-                "当前文件夹".to_owned()
+                self.location_name()
             };
             choices.push((label, folder));
         }
@@ -599,14 +859,20 @@ impl AppModel {
         choices
     }
 
-    /// True when this choice is the one currently selected.
-    pub fn destination_is(&self, path: &Path) -> bool {
-        self.destination.get().as_deref() == Some(path)
+    /// Where an extraction lands when the chip has not been used yet: the
+    /// package's own folder, or — in the batch view — the folder on screen.
+    pub fn default_destination(&self) -> Option<PathBuf> {
+        if let Some(archive) = self.archive.get()
+            && let Some(folder) = archive.folder_dir()
+        {
+            return Some(folder);
+        }
+        self.location.get()
     }
 
     /// The label the sidebar shows for the current target.
     pub fn destination_name(&self) -> String {
-        let Some(destination) = self.destination.get() else {
+        let Some(destination) = self.destination.get().or_else(|| self.default_destination()) else {
             return "未选择".into();
         };
         for (label, path) in self.destination_choices() {
@@ -615,17 +881,6 @@ impl AppModel {
             }
         }
         abbreviate_home(&destination)
-    }
-
-    /// Packages waiting behind the open one.
-    pub fn queued(&self) -> Vec<PathBuf> {
-        let current = self.archive.get().map(|archive| archive.path.clone());
-        self.recent
-            .get()
-            .into_iter()
-            .filter(|path| Some(path) != current.as_ref() && path.is_file())
-            .take(3)
-            .collect()
     }
 
     pub fn enter_directory(&self, directory: String) {
@@ -723,15 +978,26 @@ fn apply_event(
     phase: &State<Phase>,
     progress: &State<Progress>,
     status: &State<Status>,
+    location: &State<Option<PathBuf>>,
+    packages: &State<Vec<PackageItem>>,
+    reveal_after_extract: &State<bool>,
 ) {
     let generation = match &event {
         TaskEvent::Loaded { generation, .. }
         | TaskEvent::Progress { generation, .. }
-        | TaskEvent::Extracted { generation, .. } => *generation,
+        | TaskEvent::Extracted { generation, .. }
+        | TaskEvent::BatchFinished { generation, .. } => *generation,
     };
     if task.borrow().generation != generation {
         return;
     }
+    // A finished package changes what its row says, so the location is re-read
+    // whenever work lands.
+    let refresh = |history: &State<Vec<ExtractRecord>>| {
+        if let Some(directory) = location.get() {
+            packages.set(scan_packages(&directory, &history.get()));
+        }
+    };
     match event {
         TaskEvent::Loaded { result, .. } => {
             task.borrow_mut().cancel = None;
@@ -803,6 +1069,7 @@ fn apply_event(
                             ExtractRecord {
                                 name: archive.name.clone(),
                                 destination: abbreviate_home(&report.output_dir),
+                                output_dir: report.output_dir.clone(),
                                 at: browser::format_timestamp(std::time::SystemTime::now()),
                             },
                         );
@@ -832,6 +1099,10 @@ fn apply_event(
                         },
                         tone: Tone::Ok,
                     });
+                    refresh(history);
+                    if reveal_after_extract.get() {
+                        reveal_in_file_manager(&report.output_dir);
+                    }
                 }
                 Err(error) => {
                     let cancelled = error.is_cancelled();
@@ -842,6 +1113,49 @@ fn apply_event(
                     });
                 }
             }
+        }
+        TaskEvent::BatchFinished {
+            ok,
+            failed,
+            records,
+            ..
+        } => {
+            task.borrow_mut().cancel = None;
+            phase.set(Phase::Ready);
+            let cancelled = task.borrow().close_requested;
+            progress.set(Progress {
+                fraction: 1.0,
+                label: "100%".into(),
+                current_file: String::new(),
+            });
+            if !records.is_empty() {
+                let mut existing = history.get();
+                for record in records.iter().rev() {
+                    existing.retain(|candidate| candidate.name != record.name);
+                    existing.insert(0, record.clone());
+                }
+                existing.truncate(4);
+                history.set(existing);
+            }
+            let text = if failed.is_empty() {
+                format!("已解压 {ok} 个压缩包")
+            } else {
+                format!("已解压 {ok} 个 · {} 个失败", failed.len())
+            };
+            status.set(Status {
+                text,
+                detail: if failed.is_empty() {
+                    records
+                        .first()
+                        .map(|record| record.destination.clone())
+                        .unwrap_or_default()
+                } else {
+                    failed.join(" · ")
+                },
+                tone: if failed.is_empty() { Tone::Ok } else { Tone::Error },
+            });
+            refresh(history);
+            let _ = cancelled;
         }
     }
     // The OS close was vetoed until the workspace was clean; now it is.
@@ -873,6 +1187,95 @@ fn abbreviate_home(path: &Path) -> String {
         }
     }
     path.display().to_string()
+}
+
+/// Reads a folder and describes every archive in it. Names, sizes and times
+/// come from the filesystem; whether a package has been unpacked comes from
+/// this session's history, so the list never claims more than it knows.
+fn scan_packages(directory: &Path, history: &[ExtractRecord]) -> Vec<PackageItem> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut packages: Vec<PackageItem> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return None;
+            }
+            let ext = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_lowercase)?;
+            if !ARCHIVE_EXTENSIONS.contains(&ext.as_str()) {
+                return None;
+            }
+            let metadata = entry.metadata().ok();
+            let bytes = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+            let modified = metadata
+                .and_then(|meta| meta.modified().ok())
+                .map(browser::format_timestamp)
+                .unwrap_or_else(|| "—".to_owned());
+            let name = file_name(&path);
+            let extracted_to = history
+                .iter()
+                .find(|record| record.name == name)
+                .map(|record| record.destination.clone());
+            Some(PackageItem {
+                path,
+                name,
+                size: format_size(bytes),
+                bytes,
+                modified,
+                extracted_to,
+            })
+        })
+        .collect();
+    packages.sort_by(|left, right| right.modified.cmp(&left.modified));
+    packages
+}
+
+fn count_archives(directory: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let path = entry.path();
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ARCHIVE_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
+                    .unwrap_or(false)
+        })
+        .count()
+}
+
+/// Opens the file manager at a finished extraction. The only OS integration in
+/// the app that is fire-and-forget.
+/// Show one package in the file manager, leaving it selected.
+pub fn reveal_parent(path: &Path) {
+    reveal_in_file_manager(path);
+}
+
+fn reveal_in_file_manager(path: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path.display()))
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let target = path.parent().unwrap_or(path);
+        let _ = std::process::Command::new("xdg-open").arg(target).spawn();
+    }
 }
 
 fn load_archive(path: &Path) -> engine::Result<LoadedArchive> {

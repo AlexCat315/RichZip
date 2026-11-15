@@ -72,65 +72,6 @@ impl ArchiveBrowser {
         self.children.get(directory).cloned().unwrap_or_default()
     }
 
-    /// The synthetic root of the folder tree: the archive itself.
-    pub fn archive_root_item(&self) -> FileItem {
-        FileItem {
-            id: String::new(),
-            name: self.archive_name.clone(),
-            ext: String::new(),
-            size: "—".to_owned(),
-            modified: "—".to_owned(),
-            path: self.archive_name.clone(),
-            folder: true,
-            bytes: 0,
-        }
-    }
-
-    /// Only the child folders of a directory, for the navigation tree.
-    pub fn subfolders(&self, directory: &str) -> Vec<FileItem> {
-        self.items(directory)
-            .into_iter()
-            .filter(|item| item.folder)
-            .collect()
-    }
-
-    /// Every folder in the archive, flattened and depth-first, so the sidebar
-    /// can list structure without repeating the file table's contents.
-    pub fn folders(&self) -> Vec<FileItem> {
-        let mut folders: Vec<FileItem> = Vec::new();
-        for path in self.children.keys() {
-            if path.is_empty() {
-                continue;
-            }
-            let name = path.rsplit('/').next().unwrap_or(path).to_owned();
-            folders.push(FileItem {
-                id: path.clone(),
-                name,
-                ext: String::new(),
-                size: "—".to_owned(),
-                modified: "—".to_owned(),
-                path: path.clone(),
-                folder: true,
-                bytes: 0,
-            });
-        }
-        folders.sort_by_cached_key(|item| item.path.to_lowercase());
-        folders
-    }
-
-    /// Every file entry with its byte size, for selection accounting.
-    pub fn all_entries(&self) -> Vec<(String, u64)> {
-        let mut entries = Vec::new();
-        for items in self.children.values() {
-            for item in items {
-                if !item.folder {
-                    entries.push((item.id.clone(), item.bytes));
-                }
-            }
-        }
-        entries
-    }
-
     pub fn breadcrumbs(&self, directory: &str) -> Vec<BreadcrumbItem> {
         let mut breadcrumbs = vec![BreadcrumbItem {
             name: self.archive_name.clone(),
@@ -267,6 +208,61 @@ pub fn known_dirs() -> Vec<(String, PathBuf)> {
     dirs
 }
 
+/// The C `tm` prefix every platform shares; only the first nine fields are
+/// read, which is exactly what `localtime` fills in everywhere.
+#[repr(C)]
+#[derive(Default)]
+struct LocalTm {
+    sec: i32,
+    min: i32,
+    hour: i32,
+    mday: i32,
+    mon: i32,
+    year: i32,
+    wday: i32,
+    yday: i32,
+    isdst: i32,
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn localtime_r(time: *const i64, out: *mut LocalTm) -> *mut LocalTm;
+}
+
+#[cfg(windows)]
+unsafe extern "C" {
+    fn localtime(time: *const i64) -> *mut LocalTm;
+}
+
+/// Seconds the host adds to UTC, read once per call from the system zone.
+/// A file row that says "04:54" has to be the clock the user reads, not GMT.
+fn local_offset_seconds(epoch: i64) -> i64 {
+    let mut tm = LocalTm::default();
+    #[cfg(unix)]
+    let filled = unsafe { localtime_r(&epoch, &mut tm) };
+    #[cfg(windows)]
+    let filled = unsafe { localtime(&epoch) };
+    if filled.is_null() {
+        return 0;
+    }
+    let year = tm.year as i64 + 1900;
+    let month = tm.mon as i64 + 1;
+    let day = tm.mday as i64;
+    // Civil date back to days since 1970 (the inverse of the algorithm below).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let local = days * 86_400
+        + tm.hour as i64 * 3_600
+        + tm.min as i64 * 60
+        + tm.sec as i64;
+    local - epoch
+}
+
 /// "2026-11-15 09:12" without pulling a date crate in for one column.
 pub fn format_timestamp(time: std::time::SystemTime) -> String {
     const MONTHS: [&str; 12] = [
@@ -275,10 +271,12 @@ pub fn format_timestamp(time: std::time::SystemTime) -> String {
     let Ok(elapsed) = time.duration_since(std::time::UNIX_EPOCH) else {
         return "—".to_owned();
     };
-    let total_hours = elapsed.as_secs() / 3600;
+    let epoch = elapsed.as_secs() as i64;
+    let local = (epoch + local_offset_seconds(epoch)).max(0) as u64;
+    let total_hours = local / 3600;
     let total_days = total_hours / 24;
     let hour = total_hours % 24;
-    let minute = (elapsed.as_secs() / 60) % 60;
+    let minute = (local / 60) % 60;
 
     // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
     let z = total_days as i64 + 719_468;
