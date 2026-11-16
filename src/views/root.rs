@@ -1813,13 +1813,32 @@ fn settings_panel(model: Rc<AppModel>) -> AnyView {
         )],
     );
 
+    let default_format = model.default_create_format.get();
+    let mut format_chips: Vec<AnyView> = Vec::new();
+    for format in CreateFormat::ALL {
+        let model_for_chip = model.clone();
+        format_chips.push(create_choice(
+            format.label(),
+            default_format == format,
+            move || model_for_chip.set_default_create_format(format),
+        ));
+    }
+    let default_level = model.default_create_level.get();
+    let mut level_chips: Vec<AnyView> = Vec::new();
+    for level in CompressionLevel::ALL {
+        let model_for_chip = model.clone();
+        level_chips.push(create_choice(
+            level.label(),
+            default_level == level,
+            move || model_for_chip.set_default_create_level(level),
+        ));
+    }
     let compress_section = settings_section(
-        "压缩",
-        vec![settings_info(
-            "压缩级别",
-            "尚未实现",
-            "新建压缩包上线后在此设置级别与默认格式",
-        )],
+        "压缩默认值",
+        vec![
+            settings_choices("默认格式", "新任务和右键「压缩到此处」都从这里起步", format_chips),
+            settings_choices("默认级别", "面板里仍可按本次任务临时改，不改这里", level_chips),
+        ],
     );
 
     let legend = AnyView::new(
@@ -1886,6 +1905,33 @@ fn settings_section(title: &str, rows: Vec<AnyView>) -> AnyView {
         .corner_radius(10.0)
         .semantic_background(SemanticColorRef::surface_sunken())
         .semantic_border(SemanticColorRef::border(), 0.5),
+    )
+}
+
+/// A title, a hint, and a row of chips: the shape settings groups share for
+/// choices that are not switches.
+fn settings_choices(title: &'static str, hint: &'static str, chips: Vec<AnyView>) -> AnyView {
+    AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            5.0,
+            AnyView::new(views![
+                Text::new(title)
+                    .semantic_font(SemanticFontRef::body())
+                    .semantic_foreground(SemanticColorRef::on_surface()),
+                Text::new(hint)
+                    .line_limit(Some(2))
+                    .truncating_tail()
+                    .semantic_font(SemanticFontRef::caption())
+                    .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                AnyView::new(Row::new(
+                    VerticalAlignment::Center,
+                    6.0,
+                    AnyView::new(chips),
+                )),
+            ]),
+        )
+        .fill_width(),
     )
 }
 

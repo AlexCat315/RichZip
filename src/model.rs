@@ -212,6 +212,10 @@ pub struct AppModel {
     pub create_sources: State<Vec<PathBuf>>,
     pub create_format: State<CreateFormat>,
     pub create_level: State<CompressionLevel>,
+    /// What a new job starts with. The sheet above is the per-job choice; these
+    /// are the defaults it seeds from, and what the file-menu verb uses.
+    pub default_create_format: State<CreateFormat>,
+    pub default_create_level: State<CompressionLevel>,
     /// Archive name, without the format's extension.
     pub create_name: State<TextBuffer>,
     /// Where it lands. `None` means "beside the first source".
@@ -252,6 +256,8 @@ impl AppModel {
         let create_sources = State::new(Vec::new());
         let create_format = State::new(CreateFormat::Zip);
         let create_level = State::new(CompressionLevel::Balanced);
+        let default_create_format = State::new(CreateFormat::Zip);
+        let default_create_level = State::new(CompressionLevel::Balanced);
         let create_name = State::new(TextBuffer::empty());
         let create_destination = State::new(None::<PathBuf>);
         let create_for_events = CreateStates {
@@ -324,6 +330,8 @@ impl AppModel {
             create_sources,
             create_format,
             create_level,
+            default_create_format,
+            default_create_level,
             create_name,
             create_destination,
             theme_mode,
@@ -361,6 +369,8 @@ impl AppModel {
             DynamicField::state("createSources", &self.create_sources),
             DynamicField::state("createFormat", &self.create_format),
             DynamicField::state("createLevel", &self.create_level),
+            DynamicField::state("defaultCreateFormat", &self.default_create_format),
+            DynamicField::state("defaultCreateLevel", &self.default_create_level),
             DynamicField::state("createName", &self.create_name),
             DynamicField::state("createDestination", &self.create_destination),
             DynamicField::state("themeMode", &self.theme_mode),
@@ -818,6 +828,10 @@ impl AppModel {
         if self.is_busy() {
             return;
         }
+        // Every job starts from the defaults; the sheet can still change them
+        // for this one job without touching what the next job uses.
+        self.create_format.set(self.default_create_format.get());
+        self.create_level.set(self.default_create_level.get());
         self.create_open.set(true);
         if self.create_name.get().is_empty() {
             self.create_name.set(TextBuffer::new(&self.suggested_create_name()));
@@ -894,6 +908,14 @@ impl AppModel {
 
     pub fn set_create_level(&self, level: CompressionLevel) {
         self.create_level.set(level);
+    }
+
+    pub fn set_default_create_format(&self, format: CreateFormat) {
+        self.default_create_format.set(format);
+    }
+
+    pub fn set_default_create_level(&self, level: CompressionLevel) {
+        self.default_create_level.set(level);
     }
 
     /// Adds files from the platform panel. Multiple selection is the point:

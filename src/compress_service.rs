@@ -10,9 +10,14 @@ use std::sync::atomic::AtomicBool;
 
 use cove_ui::hosts::shell_services;
 
-/// Packs `items` into a ZIP beside the first item. Runs on its own thread and
-/// reveals the archive when it finishes.
-pub fn run(items: Vec<PathBuf>) {
+/// Packs `items` beside the first item, in the format and level chosen as
+/// defaults in Settings. Runs on its own thread and reveals the archive when
+/// it finishes.
+pub fn run(
+    items: Vec<PathBuf>,
+    format: mugenzip_core::CreateFormat,
+    level: mugenzip_core::CompressionLevel,
+) {
     if items.is_empty() {
         return;
     }
@@ -29,8 +34,8 @@ pub fn run(items: Vec<PathBuf>) {
             sources: items,
             destination_dir: parent,
             name,
-            format: mugenzip_core::CreateFormat::Zip,
-            level: mugenzip_core::CompressionLevel::Balanced,
+            format,
+            level,
         };
         let cancel = AtomicBool::new(false);
         match mugenzip_core::create_archive(&request, &mut |_| {}, &cancel) {

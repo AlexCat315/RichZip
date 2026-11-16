@@ -65,7 +65,11 @@ pub fn application() -> ApplicationLaunch {
                 }
             }
             if !compress_paths.is_empty() {
-                compress_service::run(compress_paths);
+                compress_service::run(
+                    compress_paths,
+                    services.default_create_format.get(),
+                    services.default_create_level.get(),
+                );
             }
         },
     );
