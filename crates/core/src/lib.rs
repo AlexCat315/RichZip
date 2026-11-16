@@ -313,6 +313,30 @@ impl<'a> EntryProgress<'a> {
     }
 }
 
+/// Whether an archive path is one of the operating system's own bookkeeping
+/// entries, not content the person meant to pack.
+///
+/// `.DS_Store` and `__MACOSX/` come from Finder, `._*` are AppleDouble
+/// resource forks, and `Thumbs.db` / `desktop.ini` are the Windows equivalents.
+/// Matching is per path component, so a file named `.DS_Store` anywhere in the
+/// tree counts while `.gitignore` and `.env` stay real content.
+pub fn is_system_entry(name: &str) -> bool {
+    name.split(['/', '\\'])
+        .filter(|component| !component.is_empty() && *component != ".")
+        .any(|component| {
+            matches!(
+                component,
+                ".DS_Store"
+                    | "Thumbs.db"
+                    | "desktop.ini"
+                    | ".Spotlight-V100"
+                    | ".Trashes"
+                    | ".fseventsd"
+                    | "__MACOSX"
+            ) || (component.starts_with("._") && component.len() > 2)
+        })
+}
+
 pub fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if bytes < 1024 {
@@ -330,5 +354,30 @@ pub fn format_size(bytes: u64) -> String {
         format!("{value:.1} {}", UNITS[unit])
     } else {
         format!("{value:.2} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_system_entry;
+
+    #[test]
+    fn finder_and_windows_junk_is_system() {
+        assert!(is_system_entry(".DS_Store"));
+        assert!(is_system_entry("folder/.DS_Store"));
+        assert!(is_system_entry("__MACOSX/._photo.jpg"));
+        assert!(is_system_entry("folder/._photo.jpg"));
+        assert!(is_system_entry("Thumbs.db"));
+        assert!(is_system_entry("desktop.ini"));
+        assert!(is_system_entry("__MACOSX"));
+    }
+
+    #[test]
+    fn real_dotfiles_are_content() {
+        assert!(!is_system_entry(".gitignore"));
+        assert!(!is_system_entry(".env"));
+        assert!(!is_system_entry("src/.github/workflow.yml"));
+        assert!(!is_system_entry("notes._draft.md"));
+        assert!(!is_system_entry("._"));
     }
 }

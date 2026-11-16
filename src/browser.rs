@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use mugenzip_core::{ArchiveEntry, EntryKind, format_size};
+use mugenzip_core::{ArchiveEntry, EntryKind, format_size, is_system_entry};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileItem {
@@ -68,8 +68,19 @@ impl ArchiveBrowser {
         browser
     }
 
-    pub fn items(&self, directory: &str) -> Vec<FileItem> {
-        self.children.get(directory).cloned().unwrap_or_default()
+    /// Rows in `directory`. `show_system` keeps Finder's `.DS_Store` and
+    /// `__MACOSX` around; the default hides them the way Finder itself does.
+    pub fn items(&self, directory: &str, show_system: bool) -> Vec<FileItem> {
+        self.children
+            .get(directory)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| show_system || !is_system_entry(&item.id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn breadcrumbs(&self, directory: &str) -> Vec<BreadcrumbItem> {

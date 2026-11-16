@@ -39,7 +39,15 @@ pub fn run(archive: PathBuf, placement: Placement) {
         let cancel = AtomicBool::new(false);
         // `smart` stays off: "here" means exactly this folder, and the folder case
         // already picked its own unique name, so bundling again would nest twice.
-        if let Ok(report) = reader.extract_entries(&destination, &|_| true, false, &mut |_| {}, &cancel) {
+        // Finder junk never belongs in an output folder; the in-window job
+        // follows the same rule, with a switch for people who disagree.
+        if let Ok(report) = reader.extract_entries(
+            &destination,
+            &|entry| !mugenzip_core::is_system_entry(&entry.name),
+            false,
+            &mut |_| {},
+            &cancel,
+        ) {
             shell_services::reveal(&report.output_dir);
         }
     });

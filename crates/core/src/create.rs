@@ -259,6 +259,10 @@ fn collect(
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             let child = entry.path();
+            if crate::is_system_entry(&entry.file_name().to_string_lossy()) {
+                plan.skipped += 1;
+                continue;
+            }
             let child_meta = fs::symlink_metadata(&child)?;
             if child_meta.file_type().is_symlink() {
                 plan.skipped += 1;
@@ -599,6 +603,43 @@ mod tests {
             fs::canonicalize(&extracted.output_dir).unwrap(),
             fs::canonicalize(&out).unwrap()
         );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Finder's bookkeeping never becomes archive content: `.DS_Store` and
+    /// `__MACOSX` are skipped while real dotfiles like `.gitignore` stay.
+    #[test]
+    fn system_files_are_not_packed() {
+        let work = scratch("skip-system");
+        let source = work.join("src");
+        fixture(&source);
+        fs::write(source.join(".DS_Store"), b"junk").unwrap();
+        fs::write(source.join("inner/.DS_Store"), b"junk").unwrap();
+        fs::write(source.join(".gitignore"), b"target/").unwrap();
+        fs::create_dir_all(source.join("__MACOSX")).unwrap();
+        fs::write(source.join("__MACOSX/._a.txt"), b"fork").unwrap();
+        let request = CreateRequest {
+            sources: vec![source],
+            destination_dir: work.clone(),
+            name: "src".to_owned(),
+            format: CreateFormat::Zip,
+            level: CompressionLevel::Balanced,
+        };
+        let cancel = AtomicBool::new(false);
+        let report = create_archive(&request, &mut |_| {}, &cancel).unwrap();
+        assert_eq!(report.skipped, 3, "two .DS_Store files and __MACOSX");
+        assert_eq!(report.entries, 5, "root, a.txt, .gitignore, inner, b.txt");
+
+        let mut reader = crate::open_archive(&report.path).unwrap();
+        let names: Vec<String> = reader
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert!(names.iter().any(|name| name.ends_with(".gitignore")));
+        assert!(!names.iter().any(|name| name.contains(".DS_Store")));
+        assert!(!names.iter().any(|name| name.contains("__MACOSX")));
         let _ = fs::remove_dir_all(&work);
     }
 

@@ -37,18 +37,36 @@ pub struct LoadedArchive {
     pub format: &'static str,
     pub browser: ArchiveBrowser,
     pub entry_count: usize,
+    /// Bookkeeping entries (`.DS_Store`, `__MACOSX`, `._*`) left out of the
+    /// browse list unless the user asks to see them.
+    pub hidden_count: usize,
     pub total_bytes: u64,
 }
 
 impl LoadedArchive {
     /// "ZIP · 8 项 · 24 B" — the one line of metadata the header carries.
-    pub fn meta_line(&self) -> String {
-        format!(
+    pub fn visible_entry_count(&self) -> usize {
+        self.entry_count.saturating_sub(self.hidden_count)
+    }
+
+    /// "ZIP · 8 项 · 24 B" — and, while Finder junk is hidden, how much of it
+    /// there is. The count follows the same filter as the rows.
+    pub fn meta_line(&self, show_system: bool) -> String {
+        let base = format!(
             "{} · {} 项 · {}",
             self.format,
-            self.entry_count,
+            if show_system {
+                self.entry_count
+            } else {
+                self.visible_entry_count()
+            },
             format_size(self.total_bytes)
-        )
+        );
+        if show_system || self.hidden_count == 0 {
+            base
+        } else {
+            format!("{base} · 已隐藏 {} 个系统条目", self.hidden_count)
+        }
     }
 
     pub fn folder_dir(&self) -> Option<PathBuf> {
@@ -297,6 +315,10 @@ pub struct AppModel {
     pub settings_open: State<bool>,
     /// Show the output folder in the file manager once extraction finishes.
     pub reveal_after_extract: State<bool>,
+    /// Show Finder's own bookkeeping entries (`.DS_Store`, `__MACOSX`, `._*`)
+    /// in the browse list and include them when extracting. Off by default,
+    /// matching Finder and Keka.
+    pub show_system_files: State<bool>,
     /// The new-archive sheet is open.
     pub create_open: State<bool>,
     /// What will go into the next archive. Order is the user's.
@@ -348,6 +370,7 @@ impl AppModel {
         let preview = State::new(PreviewState::Hidden);
         let settings_open = State::new(false);
         let reveal_after_extract = State::new(true);
+        let show_system_files = State::new(false);
         let create_open = State::new(false);
         let create_sources = State::new(Vec::new());
         let create_format = State::new(CreateFormat::Zip);
@@ -456,6 +479,7 @@ impl AppModel {
             preview,
             settings_open,
             reveal_after_extract,
+            show_system_files,
             create_open,
             create_sources,
             create_format,
@@ -499,6 +523,7 @@ impl AppModel {
             DynamicField::state("preview", &self.preview),
             DynamicField::state("settingsOpen", &self.settings_open),
             DynamicField::state("revealAfterExtract", &self.reveal_after_extract),
+            DynamicField::state("showSystemFiles", &self.show_system_files),
             DynamicField::state("createOpen", &self.create_open),
             DynamicField::state("createSources", &self.create_sources),
             DynamicField::state("createFormat", &self.create_format),
@@ -775,6 +800,7 @@ impl AppModel {
 
         let sender = self.sender.clone();
         let wrap = self.wrap_in_folder.get();
+        let skip_system = !self.show_system_files.get();
         std::thread::spawn(move || {
             let total = selected.len() as u64;
             let mut ok = 0;
@@ -799,7 +825,15 @@ impl AppModel {
                     destination.clone()
                 };
                 let result = open_archive(&package.path).and_then(|mut archive| {
-                    archive.extract_entries(&target, &|_: &ArchiveEntry| true, false, &mut |_| {}, &cancel)
+                    archive.extract_entries(
+                        &target,
+                        &|entry: &ArchiveEntry| {
+                            !skip_system || !engine::is_system_entry(&entry.name)
+                        },
+                        false,
+                        &mut |_| {},
+                        &cancel,
+                    )
                 });
                 match result {
                     Ok(report) => {
@@ -878,7 +912,9 @@ impl AppModel {
     /// The current directory's entries, before the search filter is applied.
     pub fn current_items(&self) -> Vec<FileItem> {
         match self.archive.get() {
-            Some(archive) => archive.browser.items(&self.directory.get()),
+            Some(archive) => archive
+                .browser
+                .items(&self.directory.get(), self.show_system_files.get()),
             None => Vec::new(),
         }
     }
@@ -1270,8 +1306,9 @@ impl AppModel {
 
         let sender = self.sender.clone();
         let source = archive.path.clone();
+        let show_system = self.show_system_files.get();
         std::thread::spawn(move || {
-            let predicate = selection_filter(selected);
+            let predicate = selection_filter(selected, !show_system);
             let mut throttle = Throttle::new();
             let result = open_archive(&source).and_then(|mut archive| {
                 archive.extract_entries(
@@ -1405,6 +1442,31 @@ impl AppModel {
             },
             move |value| model.change_selection(value),
         )
+    }
+
+    /// The settings switch for Finder/Windows bookkeeping files. Changing it
+    /// rebuilds nothing: the rows and counts are filtered on read, so the
+    /// archive is not reopened and the current folder is kept.
+    pub fn show_system_files_binding(&self) -> Binding<bool> {
+        let model = self.clone();
+        Binding::new(
+            {
+                let state = self.show_system_files.clone();
+                move || state.get()
+            },
+            move |value| model.set_show_system_files(value),
+        )
+    }
+
+    pub fn set_show_system_files(&self, show: bool) {
+        if self.show_system_files.get() == show {
+            return;
+        }
+        self.show_system_files.set(show);
+        // A selection made while visible could point at a row that is now
+        // hidden; dropping it is safer than extracting an invisible entry.
+        self.clear_preview();
+        self.selection.set(BTreeSet::new());
     }
 
     pub fn change_selection(&self, value: BTreeSet<String>) {
@@ -1603,10 +1665,14 @@ impl AppModel {
 
 /// Builds the engine predicate for a selection. An empty selection means "the
 /// whole archive"; otherwise an entry matches when it is selected or lives
-/// under a selected folder.
-fn selection_filter(selected: BTreeSet<String>) -> impl Fn(&ArchiveEntry) -> bool {
+/// under a selected folder. System bookkeeping entries are dropped unless the
+/// user asked to see them, so a whole-archive extraction stays clean.
+fn selection_filter(selected: BTreeSet<String>, skip_system: bool) -> impl Fn(&ArchiveEntry) -> bool {
     let prefixes: Vec<String> = selected.iter().map(|id| format!("{id}/")).collect();
     move |entry| {
+        if skip_system && engine::is_system_entry(&entry.name) {
+            return false;
+        }
         if selected.is_empty() {
             return true;
         }
@@ -1778,7 +1844,7 @@ fn apply_event(
                     let folder = loaded.folder_dir();
                     let summary = format!(
                         "{} 项 · {}",
-                        loaded.entry_count,
+                        loaded.visible_entry_count(),
                         format_size(loaded.total_bytes)
                     );
                     directory.set(String::new());
@@ -2122,6 +2188,10 @@ fn load_archive(path: &Path) -> engine::Result<LoadedArchive> {
     let mut archive = open_archive(path)?;
     let entries = archive.list()?;
     let entry_count = entries.len();
+    let hidden_count = entries
+        .iter()
+        .filter(|entry| mugenzip_core::is_system_entry(&entry.name))
+        .count();
     let total_bytes = entries
         .iter()
         .filter(|entry| entry.is_file())
@@ -2134,6 +2204,7 @@ fn load_archive(path: &Path) -> engine::Result<LoadedArchive> {
         format: format.label(),
         browser,
         entry_count,
+        hidden_count,
         total_bytes,
     })
 }

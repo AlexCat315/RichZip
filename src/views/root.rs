@@ -915,7 +915,7 @@ fn identity_subtitle(model: &AppModel, archive: &LoadedArchive) -> String {
             format!("{} · {}", status.text, status.detail)
         };
     }
-    archive.meta_line()
+    archive.meta_line(model.show_system_files.get())
 }
 
 /// "解压到 HaHa ▾" — one line of text, a menu behind it. The destination is
@@ -2624,6 +2624,11 @@ fn settings_panel(model: Rc<AppModel>) -> AnyView {
                 "完成后在文件管理器中显示",
                 "解压结束时打开输出目录",
                 model.reveal_after_extract.binding(),
+            ),
+            settings_toggle(
+                "显示系统文件",
+                "关闭时列表、解压、压缩都会跳过这些文件",
+                model.show_system_files_binding(),
             ),
         ],
     );
