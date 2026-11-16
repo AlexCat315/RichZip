@@ -2,4 +2,33 @@
 Type=Application
 Categories=Utility;Archiving;
 Terminal=false
-MimeType=application/zip;application/x-tar;application/x-7z-compressed;application/vnd.rar;
+MimeType=application/zip;application/x-tar;application/x-7z-compressed;application/vnd.rar;application/gzip;application/x-xz;
+Name=MugenZip
+Comment=Archive manager
+Exec=mugenzip %f
+Icon=mugenzip
+Actions=ExtractHere;ExtractFolder;SmartExtract;CompressZip;Compress7z;CompressUi;
+
+[Desktop Action ExtractHere]
+Name=解压到当前目录
+Exec=mugenzip --verb extract-here %f
+
+[Desktop Action ExtractFolder]
+Name=解压到同名目录
+Exec=mugenzip --verb extract-folder %f
+
+[Desktop Action SmartExtract]
+Name=智能解压到同名目录
+Exec=mugenzip --verb smart-extract %f
+
+[Desktop Action CompressZip]
+Name=压缩至 ZIP
+Exec=mugenzip --verb compress-zip %f
+
+[Desktop Action Compress7z]
+Name=压缩至 7Z
+Exec=mugenzip --verb compress-7z %f
+
+[Desktop Action CompressUi]
+Name=在 MugenZip 中压缩
+Exec=mugenzip --verb compress-ui %f

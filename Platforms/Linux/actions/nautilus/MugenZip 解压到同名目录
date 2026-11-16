@@ -1,0 +1,2 @@
+#!/bin/sh
+exec mugenzip --verb extract-folder $NAUTILUS_SCRIPT_SELECTED_FILE_PATHS

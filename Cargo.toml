@@ -1,6 +1,6 @@
 [package]
 name = "mugenzip"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.99.1"
 default-run = "mugenzip"
@@ -11,6 +11,7 @@ publish = false
 id = "com.mugenzip.app"
 name = "MugenZip"
 build = 1
+resources = ["assets"]
 
 [workspace]
 members = [".", "crates/core", "xtask"]

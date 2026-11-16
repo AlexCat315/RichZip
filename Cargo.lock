@@ -308,7 +308,7 @@ dependencies = [
 [[package]]
 name = "cove-agent"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "serde",
  "serde_json",
@@ -317,7 +317,7 @@ dependencies = [
 [[package]]
 name = "cove-alloc"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "libc",
  "thiserror",
@@ -327,7 +327,7 @@ dependencies = [
 [[package]]
 name = "cove-browser"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cove-composition",
  "cove-core",
@@ -348,7 +348,7 @@ dependencies = [
 [[package]]
 name = "cove-composition"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cove-composition-macros",
  "cove-core",
@@ -358,7 +358,7 @@ dependencies = [
 [[package]]
 name = "cove-composition-macros"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -368,7 +368,7 @@ dependencies = [
 [[package]]
 name = "cove-core"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cc",
  "cove-platform",
@@ -393,7 +393,7 @@ dependencies = [
 [[package]]
 name = "cove-debugger"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cc",
  "libc",
@@ -405,7 +405,7 @@ dependencies = [
 [[package]]
 name = "cove-devtools"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "base64 0.22.1",
  "cove-agent 0.3.1 (git+https://github.com/AlexCat315/Cove?tag=v0.3.1)",
@@ -452,7 +452,7 @@ dependencies = [
 [[package]]
 name = "cove-devtools-cli"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -486,7 +486,7 @@ dependencies = [
 [[package]]
 name = "cove-devtools-protocol"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "serde",
  "serde_json",
@@ -496,7 +496,7 @@ dependencies = [
 [[package]]
 name = "cove-examples"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cove-alloc",
  "cove-composition",
@@ -518,7 +518,7 @@ dependencies = [
 [[package]]
 name = "cove-graphics"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -543,7 +543,7 @@ dependencies = [
 [[package]]
 name = "cove-hosts"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cove-alloc",
  "cove-composition",
@@ -569,7 +569,7 @@ dependencies = [
 [[package]]
 name = "cove-http"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cc",
  "thiserror",
@@ -578,7 +578,7 @@ dependencies = [
 [[package]]
 name = "cove-imaging"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cc",
  "cove-core",
@@ -589,7 +589,7 @@ dependencies = [
 [[package]]
 name = "cove-logging"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cc",
  "cove-system",
@@ -601,7 +601,7 @@ dependencies = [
 [[package]]
 name = "cove-media"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cove-logging",
  "libc",
@@ -621,7 +621,7 @@ dependencies = [
 [[package]]
 name = "cove-native-build"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cc",
  "cmake",
@@ -647,7 +647,7 @@ dependencies = [
 [[package]]
 name = "cove-platform"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "serde",
 ]
@@ -655,7 +655,7 @@ dependencies = [
 [[package]]
 name = "cove-profiling"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "addr2line",
  "libc",
@@ -667,7 +667,7 @@ dependencies = [
 [[package]]
 name = "cove-runtime"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cc",
  "cove-core",
@@ -682,7 +682,7 @@ dependencies = [
 [[package]]
 name = "cove-shell"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "block2",
  "cc",
@@ -703,12 +703,12 @@ version = "0.3.1"
 [[package]]
 name = "cove-shell-verbs"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 
 [[package]]
 name = "cove-system"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cc",
  "libc",
@@ -720,7 +720,7 @@ dependencies = [
 [[package]]
 name = "cove-terminal"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cc",
  "cove-composition",
@@ -736,7 +736,7 @@ dependencies = [
 [[package]]
 name = "cove-text"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cc",
  "cove-core",
@@ -752,7 +752,7 @@ dependencies = [
 [[package]]
 name = "cove-ui"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cove-browser",
  "cove-composition",
@@ -775,7 +775,7 @@ dependencies = [
 [[package]]
 name = "cove-ui-addons"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cove-composition",
  "cove-core",
@@ -792,7 +792,7 @@ dependencies = [
 [[package]]
 name = "cove-ui-compose"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "cc",
  "cove-composition",
@@ -814,7 +814,7 @@ dependencies = [
 [[package]]
 name = "cove-watch"
 version = "0.3.1"
-source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#484ff5bd23ef39f8e49f1fd244dbd279ba7af2c7"
+source = "git+https://github.com/AlexCat315/Cove?tag=v0.3.1#1486ddb24674aace5b17431c6e193c4f2c75e160"
 dependencies = [
  "libc",
 ]
@@ -1359,7 +1359,7 @@ dependencies = [
 
 [[package]]
 name = "mugenzip"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cove-ui",
  "mugenzip-core",

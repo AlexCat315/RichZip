@@ -2633,6 +2633,19 @@ fn settings_panel(model: Rc<AppModel>) -> AnyView {
         ],
     );
 
+    let widget_section = settings_section(
+        "悬浮球",
+        vec![settings_toggle(
+            "显示桌面悬浮球",
+            if cfg!(target_os = "macos") {
+                "常驻菜单栏与桌面圆点，提供拖放解压、压缩和快捷键"
+            } else {
+                "常驻系统托盘与桌面圆点，主程序关闭后仍可拖放压缩包"
+            },
+            model.widget_enabled_binding(),
+        )],
+    );
+
     let appearance_section = settings_section(
         "外观",
         vec![
@@ -2690,6 +2703,7 @@ fn settings_panel(model: Rc<AppModel>) -> AnyView {
         8.0,
         vec![
             extract_section,
+            widget_section,
             appearance_section,
             language_section,
             compress_section,

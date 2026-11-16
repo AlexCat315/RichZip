@@ -137,10 +137,26 @@ jobs:
           mkdir -p dist target/deb/mugenzip/DEBIAN target/deb/mugenzip/opt/mugenzip
           mkdir -p target/deb/mugenzip/usr/bin target/deb/mugenzip/usr/share/applications
           mkdir -p target/deb/mugenzip/usr/share/pixmaps
+          mkdir -p target/deb/mugenzip/usr/share/nautilus/scripts
+          mkdir -p target/deb/mugenzip/usr/share/kio/servicemenus
+          mkdir -p target/deb/mugenzip/etc/xdg/autostart
           tar -C target/release-app -czf "dist/mugenzip-${VERSION}-linux-x64.tar.gz" MugenZip
 
           cp -a target/release-app/MugenZip/. target/deb/mugenzip/opt/mugenzip/
           cp assets/logo_box.png target/deb/mugenzip/usr/share/pixmaps/mugenzip.png
+          cp -a Platforms/Linux/actions/nautilus/. target/deb/mugenzip/usr/share/nautilus/scripts/
+          chmod 755 target/deb/mugenzip/usr/share/nautilus/scripts/*
+          cp Platforms/Linux/actions/kio/*.desktop target/deb/mugenzip/usr/share/kio/servicemenus/
+          cat > target/deb/mugenzip/etc/xdg/autostart/mugenzip-widget.desktop <<'AUTOSTART'
+          [Desktop Entry]
+          Type=Application
+          Name=MugenZip 悬浮球
+          Comment=桌面悬浮球
+          Exec=/opt/mugenzip/mugenzip --widget
+          Icon=/usr/share/pixmaps/mugenzip.png
+          Terminal=false
+          X-GNOME-Autostart-enabled=true
+          AUTOSTART
           cat > target/deb/mugenzip/usr/bin/mugenzip <<'SH'
           #!/bin/sh
           exec /opt/mugenzip/mugenzip "$@"
@@ -157,6 +173,31 @@ jobs:
           Terminal=false
           Categories=Utility;Archiving;
           MimeType=application/zip;application/x-7z-compressed;application/vnd.rar;application/x-tar;application/gzip;application/x-bzip2;application/x-xz;
+          Actions=ExtractHere;ExtractFolder;SmartExtract;CompressZip;Compress7z;CompressUi;
+
+          [Desktop Action ExtractHere]
+          Name=解压到当前目录
+          Exec=mugenzip --verb extract-here %f
+
+          [Desktop Action ExtractFolder]
+          Name=解压到同名目录
+          Exec=mugenzip --verb extract-folder %f
+
+          [Desktop Action SmartExtract]
+          Name=智能解压到同名目录
+          Exec=mugenzip --verb smart-extract %f
+
+          [Desktop Action CompressZip]
+          Name=压缩至 ZIP
+          Exec=mugenzip --verb compress-zip %f
+
+          [Desktop Action Compress7z]
+          Name=压缩至 7Z
+          Exec=mugenzip --verb compress-7z %f
+
+          [Desktop Action CompressUi]
+          Name=在 MugenZip 中压缩
+          Exec=mugenzip --verb compress-ui %f
           DESKTOP
 
           cat > target/deb/mugenzip/DEBIAN/control <<EOF

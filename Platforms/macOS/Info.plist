@@ -43,21 +43,61 @@
         <dict>
             <key>NSMenuItem</key><dict><key>default</key><string>用 MugenZip 打开</string></dict>
             <key>NSMessage</key><string>coveOpenService:</string>
-            <key>NSSendFileTypes</key><array><string>public.item</string></array>
+            <key>NSSendFileTypes</key><array><string>public.zip-archive</string><string>com.rarlab.rar-archive</string><string>org.7-zip.7-zip-archive</string><string>public.tar-archive</string><string>org.gnu.gnu-zip-archive</string><string>public.bzip2-archive</string><string>public.xz-archive</string></array>
         </dict>
         <dict>
-            <key>NSMenuItem</key><dict><key>default</key><string>解压到此处</string></dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>解压到当前目录</string></dict>
             <key>NSMessage</key><string>coveExtractHereService:</string>
-            <key>NSSendFileTypes</key><array><string>public.item</string></array>
+            <key>NSSendFileTypes</key><array><string>public.zip-archive</string><string>com.rarlab.rar-archive</string><string>org.7-zip.7-zip-archive</string><string>public.tar-archive</string><string>org.gnu.gnu-zip-archive</string><string>public.bzip2-archive</string><string>public.xz-archive</string></array>
         </dict>
         <dict>
-            <key>NSMenuItem</key><dict><key>default</key><string>解压到同名文件夹</string></dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>解压到同名目录</string></dict>
             <key>NSMessage</key><string>coveExtractFolderService:</string>
+            <key>NSSendFileTypes</key><array><string>public.zip-archive</string><string>com.rarlab.rar-archive</string><string>org.7-zip.7-zip-archive</string><string>public.tar-archive</string><string>org.gnu.gnu-zip-archive</string><string>public.bzip2-archive</string><string>public.xz-archive</string></array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>智能解压到同名目录</string></dict>
+            <key>NSMessage</key><string>coveSmartExtractService:</string>
+            <key>NSSendFileTypes</key><array><string>public.zip-archive</string><string>com.rarlab.rar-archive</string><string>org.7-zip.7-zip-archive</string><string>public.tar-archive</string><string>org.gnu.gnu-zip-archive</string><string>public.bzip2-archive</string><string>public.xz-archive</string></array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>压缩至 ZIP</string></dict>
+            <key>NSMessage</key><string>coveCompressZipService:</string>
+            <key>NSSendFileTypes</key><array><string>public.item</string><string>public.folder</string></array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>压缩至 7Z</string></dict>
+            <key>NSMessage</key><string>coveCompressSevenZService:</string>
+            <key>NSSendFileTypes</key><array><string>public.item</string><string>public.folder</string></array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>在 MugenZip 中压缩</string></dict>
+            <key>NSMessage</key><string>coveCompressPanelService:</string>
+            <key>NSSendFileTypes</key><array><string>public.item</string><string>public.folder</string></array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>校验 CRC32</string></dict>
+            <key>NSMessage</key><string>coveHashCrc32Service:</string>
             <key>NSSendFileTypes</key><array><string>public.item</string></array>
         </dict>
         <dict>
-            <key>NSMenuItem</key><dict><key>default</key><string>压缩到此处</string></dict>
-            <key>NSMessage</key><string>coveCompressHereService:</string>
+            <key>NSMenuItem</key><dict><key>default</key><string>校验 MD5</string></dict>
+            <key>NSMessage</key><string>coveHashMd5Service:</string>
+            <key>NSSendFileTypes</key><array><string>public.item</string></array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>校验 SHA-1</string></dict>
+            <key>NSMessage</key><string>coveHashSha1Service:</string>
+            <key>NSSendFileTypes</key><array><string>public.item</string></array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>校验 SHA-256</string></dict>
+            <key>NSMessage</key><string>coveHashSha256Service:</string>
+            <key>NSSendFileTypes</key><array><string>public.item</string></array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>校验 SHA-512</string></dict>
+            <key>NSMessage</key><string>coveHashSha512Service:</string>
             <key>NSSendFileTypes</key><array><string>public.item</string></array>
         </dict>
     </array>

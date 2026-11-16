@@ -137,6 +137,7 @@ fn action_rect(index: usize, size: f32) -> (f32, f32, f32, f32) {
 
 /// Builds the floating-menu application declaration.
 pub fn widget_application() -> ApplicationLaunch {
+    crate::widget_host::record_widget_pid();
     let state = WidgetState::default();
     let root = MenuView { state: state.clone() };
     ApplicationLaunch::new(root).configure(|app| {
@@ -238,7 +239,7 @@ impl WidgetState {
         let tray_state = self.clone();
         let tray_display = display.clone();
         let _ = status_item::install(
-            "archivebox",
+            &tray_icon(),
             "MugenZip 悬浮菜单",
             STATUS_MENU,
             move |id| match id {
@@ -467,7 +468,7 @@ fn open_main(fallback_arg: Option<&str>) {
         activate_main(pid, fallback_arg.is_some());
         return;
     }
-    let executable = main_executable();
+    let executable = crate::widget_host::main_executable();
     let mut command = std::process::Command::new(executable);
     if let Some(arg) = fallback_arg {
         command.arg(arg);
@@ -476,10 +477,8 @@ fn open_main(fallback_arg: Option<&str>) {
 }
 
 /// PID of a live browser instance, or `None` when only the dot is running.
-/// The helper bundle lives at `MugenZipWidget.app`; the browser is the only
-/// process whose path contains `MugenZip.app`.
 fn main_process_id() -> Option<i32> {
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("ps")
             .args(["-axo", "pid=,command="])
@@ -502,25 +501,68 @@ fn main_process_id() -> Option<i32> {
         }
         None
     }
-    #[cfg(not(unix))]
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
+        let self_path = std::env::current_exe().ok()?;
+        for entry in std::fs::read_dir("/proc").ok()? {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+                continue;
+            };
+            let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else {
+                continue;
+            };
+            let mut parts = raw.split(|byte| *byte == 0);
+            let Some(exe) = parts.next() else {
+                continue;
+            };
+            let exe = std::path::PathBuf::from(String::from_utf8_lossy(exe).to_string());
+            if exe != self_path {
+                continue;
+            }
+            let has_widget = parts.any(|arg| arg == b"--widget");
+            if !has_widget {
+                return Some(pid);
+            }
+        }
         None
+    }
+    #[cfg(windows)]
+    {
+        crate::widget_host::running_main_pid().map(|pid| pid as i32)
     }
 }
 
-fn main_executable() -> PathBuf {
-    let Ok(executable) = std::env::current_exe() else {
-        return PathBuf::from("mugenzip");
-    };
-    // `.../MugenZipWidget.app/Contents/MacOS/mugenzip` -> sibling browser.
-    let path = executable.to_string_lossy();
-    if let Some(stem) = path.find("MugenZipWidget.app") {
-        let browser = format!("{}MugenZip.app{}", &path[..stem], &path[stem + "MugenZipWidget.app".len()..]);
-        if PathBuf::from(&browser).is_file() {
-            return PathBuf::from(browser);
-        }
+/// The tray icon: an SF Symbol on macOS, a real BMP path on the SDL tray
+/// platforms. A missing asset degrades to the platform default instead of
+/// dropping the tray item entirely.
+fn tray_icon() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        "archivebox".to_owned()
     }
-    executable
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut candidates = Vec::new();
+        if let Some(dir) = std::env::var_os("MUGENZIP_TRAY_ICON") {
+            candidates.push(PathBuf::from(dir));
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                candidates.push(dir.join("assets").join("tray.bmp"));
+                candidates.push(dir.join("..").join("share").join("pixmaps").join("mugenzip-tray.bmp"));
+            }
+        }
+        candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join("tray.bmp"));
+        for path in candidates {
+            if path.is_file() {
+                return path.to_string_lossy().into_owned();
+            }
+        }
+        String::new()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -537,10 +579,64 @@ fn activate_main(pid: i32, settings: bool) {
         .status();
 }
 
-#[cfg(not(target_os = "macos"))]
-fn activate_main(_pid: i32, _settings: bool) {}
+#[cfg(windows)]
+fn activate_main(pid: i32, _settings: bool) {
+    use std::ffi::c_void;
+    type Hwnd = *mut c_void;
+    const SW_RESTORE: i32 = 9;
+    unsafe extern "system" {
+        fn EnumWindows(
+            callback: unsafe extern "system" fn(Hwnd, isize) -> i32,
+            lparam: isize,
+        ) -> i32;
+        fn GetWindowThreadProcessId(window: Hwnd, pid: *mut u32) -> u32;
+        fn IsWindowVisible(window: Hwnd) -> i32;
+        fn ShowWindow(window: Hwnd, command: i32) -> i32;
+        fn SetForegroundWindow(window: Hwnd) -> i32;
+    }
+    unsafe extern "system" fn find(window: Hwnd, lparam: isize) -> i32 {
+        let target = unsafe { &mut *(lparam as *mut (u32, Option<Hwnd>)) };
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(window, &mut pid) };
+        if pid == target.0 && unsafe { IsWindowVisible(window) } != 0 {
+            target.1 = Some(window);
+            return 0;
+        }
+        1
+    }
+    let mut target = (pid as u32, None);
+    unsafe {
+        EnumWindows(find, &mut target as *mut _ as isize);
+    }
+    if let Some(window) = target.1 {
+        unsafe {
+            ShowWindow(window, SW_RESTORE);
+            SetForegroundWindow(window);
+        }
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn activate_main(_pid: i32, _settings: bool) {
+    // X11 sessions usually have one of these. On Wayland there is no portable
+    // way to raise another client, so a missing tool is a quiet no-op.
+    for (program, args) in [
+        ("xdotool", vec!["search", "--name", "MugenZip", "windowactivate"]),
+        ("wmctrl", vec!["-a", "MugenZip"]),
+    ] {
+        if std::process::Command::new(program)
+            .args(args)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+        {
+            break;
+        }
+    }
+}
 
 fn quit(display: &AppDisplayHandle) {
+    crate::widget_host::clear_widget_pid();
     // Let the runtime unhook the global hotkey, remove the status item and
     // tear down the shaped window instead of killing the process.
     display.quit();

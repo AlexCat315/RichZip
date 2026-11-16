@@ -1,9 +1,9 @@
 //! "Compress here" for the OS file menu.
 //!
 //! Like the in-place extract verbs, this never opens the window: Finder already
-//! knows the selection, and the answer is a ZIP beside it. Multiple items become
-//! one archive named after the selection's folder logic: a single item keeps its
-//! own name, several become 归档.
+//! knows the selection, and the answer is an archive beside it. Multiple items
+//! become one archive named after the selection's folder logic: a single item
+//! keeps its own name, several become 归档.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -22,27 +22,37 @@ pub fn run(
         return;
     }
     std::thread::spawn(move || {
-        let Some(parent) = items
-            .first()
-            .and_then(|item| item.parent())
-            .map(Path::to_path_buf)
-        else {
-            return;
-        };
-        let name = archive_name(&items);
-        let request = mugenzip_core::CreateRequest {
-            sources: items,
-            destination_dir: parent,
-            name,
-            format,
-            level,
-        };
-        let cancel = AtomicBool::new(false);
-        match mugenzip_core::create_archive(&request, &mut |_| {}, &cancel) {
-            Ok(report) => shell_services::reveal(&report.path),
-            Err(_) => {}
+        if let Some(path) = run_blocking(items, format, level) {
+            shell_services::reveal(&path);
         }
     });
+}
+
+/// Blocking form for the context-menu command line.
+pub fn run_blocking(
+    items: Vec<PathBuf>,
+    format: mugenzip_core::CreateFormat,
+    level: mugenzip_core::CompressionLevel,
+) -> Option<PathBuf> {
+    if items.is_empty() {
+        return None;
+    }
+    let parent = items
+        .first()
+        .and_then(|item| item.parent())
+        .map(Path::to_path_buf)?;
+    let name = archive_name(&items);
+    let request = mugenzip_core::CreateRequest {
+        sources: items,
+        destination_dir: parent,
+        name,
+        format,
+        level,
+    };
+    let cancel = AtomicBool::new(false);
+    mugenzip_core::create_archive(&request, &mut |_| {}, &cancel)
+        .ok()
+        .map(|report| report.path)
 }
 
 /// One folder keeps its name; one file loses its extension; a mixed selection

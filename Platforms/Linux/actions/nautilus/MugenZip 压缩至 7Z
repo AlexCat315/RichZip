@@ -1,0 +1,2 @@
+#!/bin/sh
+exec mugenzip --verb compress-7z $NAUTILUS_SCRIPT_SELECTED_FILE_PATHS

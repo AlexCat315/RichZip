@@ -24,7 +24,9 @@ use mugenzip_core::{
 
 use crate::browser::{self, ArchiveBrowser, FileItem};
 use crate::preview::{self, PreviewKind, PreviewOutcome};
+use crate::settings::Settings;
 use crate::theme::ThemeMode;
+use crate::widget_host;
 
 pub const ARCHIVE_EXTENSIONS: [&str; 10] = [
     "zip", "7z", "rar", "tar", "gz", "tgz", "cbz", "cbr", "bz2", "xz",
@@ -313,6 +315,10 @@ pub struct AppModel {
     pub preview: State<PreviewState>,
     /// The settings sheet is open.
     pub settings_open: State<bool>,
+    /// The resident floating menu should be running. This is a product
+    /// preference, not a snapshot of the process: the settings switch writes
+    /// it, and the helper is started/stopped to match.
+    pub widget_enabled: State<bool>,
     /// Show the output folder in the file manager once extraction finishes.
     pub reveal_after_extract: State<bool>,
     /// Show Finder's own bookkeeping entries (`.DS_Store`, `__MACOSX`, `._*`)
@@ -347,6 +353,7 @@ pub struct AppModel {
 
 impl AppModel {
     pub fn new() -> Self {
+        let preferences = Settings::load();
         let archive = State::new(None);
         let history = State::new(Vec::new());
         let history_for_events = history.clone();
@@ -356,7 +363,7 @@ impl AppModel {
         let search = State::new(TextBuffer::empty());
         let table_sort = State::new(None);
         let destination = State::new(None);
-        let wrap_in_folder = State::new(true);
+        let wrap_in_folder = State::new(preferences.wrap_in_folder);
         let phase = State::new(Phase::Idle);
         let progress = State::new(Progress::default());
         let status = State::new(Status::default());
@@ -369,14 +376,15 @@ impl AppModel {
         let package_selection = State::new(BTreeSet::new());
         let preview = State::new(PreviewState::Hidden);
         let settings_open = State::new(false);
-        let reveal_after_extract = State::new(true);
-        let show_system_files = State::new(false);
+        let widget_enabled = State::new(preferences.widget_enabled);
+        let reveal_after_extract = State::new(preferences.reveal_after_extract);
+        let show_system_files = State::new(preferences.show_system_files);
         let create_open = State::new(false);
         let create_sources = State::new(Vec::new());
-        let create_format = State::new(CreateFormat::Zip);
-        let create_level = State::new(CompressionLevel::Balanced);
-        let default_create_format = State::new(CreateFormat::Zip);
-        let default_create_level = State::new(CompressionLevel::Balanced);
+        let create_format = State::new(preferences.default_create_format);
+        let create_level = State::new(preferences.default_create_level);
+        let default_create_format = State::new(preferences.default_create_format);
+        let default_create_level = State::new(preferences.default_create_level);
         let create_name = State::new(TextBuffer::empty());
         let create_destination = State::new(None::<PathBuf>);
         let create_for_events = CreateStates {
@@ -385,7 +393,7 @@ impl AppModel {
             name: create_name.clone(),
             destination: create_destination.clone(),
         };
-        let theme_mode = State::new(Some(ThemeMode::System));
+        let theme_mode = State::new(Some(preferences.theme_mode));
         let reveal_for_events = reveal_after_extract.clone();
         let location_for_events = location.clone();
         let task = Rc::new(RefCell::new(TaskSlot::default()));
@@ -478,6 +486,7 @@ impl AppModel {
             package_selection,
             preview,
             settings_open,
+            widget_enabled,
             reveal_after_extract,
             show_system_files,
             create_open,
@@ -522,6 +531,7 @@ impl AppModel {
             DynamicField::state("packageSelection", &self.package_selection),
             DynamicField::state("preview", &self.preview),
             DynamicField::state("settingsOpen", &self.settings_open),
+            DynamicField::state("widgetEnabled", &self.widget_enabled),
             DynamicField::state("revealAfterExtract", &self.reveal_after_extract),
             DynamicField::state("showSystemFiles", &self.show_system_files),
             DynamicField::state("createOpen", &self.create_open),
@@ -592,16 +602,31 @@ impl AppModel {
         // Windows' "Open with" deliver it. Finder's document event arrives
         // through OpenedDocuments instead. `--settings` is the deep-link entry
         // used by the floating menu when no instance is alive yet.
-        let mut arguments = std::env::args_os().skip(1);
-        if let Some(argument) = arguments.next() {
+        let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+        if let Some(argument) = arguments.first() {
             if argument == "--settings" {
                 self.open_settings();
+            } else if argument == "--create" {
+                self.open_create_with(
+                    arguments[1..]
+                        .iter()
+                        .map(PathBuf::from)
+                        .filter(|path| path.exists())
+                        .collect(),
+                );
             } else {
                 let path = PathBuf::from(argument);
                 if path.is_file() {
                     self.open(path);
                 }
             }
+        }
+
+        // The browser owns the resident dot. Starting it here (rather than
+        // relying on the installer's login item alone) keeps the two launch
+        // modes together when someone starts the app directly from a build.
+        if self.widget_enabled.get() {
+            widget_host::start_widget();
         }
     }
 
@@ -885,8 +910,74 @@ impl AppModel {
         self.settings_open.set(true);
     }
 
+    /// Opens the create sheet with a selection handed over by the file menu.
+    /// The person still chooses name, format and destination; the selection is
+    /// the only thing the file manager already knows.
+    pub fn open_create_with(&self, sources: Vec<PathBuf>) {
+        if sources.is_empty() {
+            return;
+        }
+        let name = match sources.as_slice() {
+            [one] if one.is_dir() => one
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "归档".into()),
+            [one] => one
+                .file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "归档".into()),
+            _ => "归档".into(),
+        };
+        self.create_sources.set(sources);
+        self.create_name.set(TextBuffer::new(&name));
+        self.create_format.set(self.default_create_format.get());
+        self.create_level.set(self.default_create_level.get());
+        self.create_destination.set(None);
+        self.create_open.set(true);
+    }
+
     pub fn close_settings(&self) {
         self.settings_open.set(false);
+        self.persist_settings();
+    }
+
+    /// The settings switch for the resident dot. It is a live control: turning
+    /// it off terminates the helper, turning it on starts one, and the login
+    /// item is kept in sync so the choice survives a restart.
+    pub fn widget_enabled_binding(&self) -> Binding<bool> {
+        let model = self.clone();
+        Binding::new(
+            {
+                let state = self.widget_enabled.clone();
+                move || state.get()
+            },
+            move |value| model.set_widget_enabled(value),
+        )
+    }
+
+    pub fn set_widget_enabled(&self, enabled: bool) {
+        if self.widget_enabled.get() == enabled {
+            return;
+        }
+        self.widget_enabled.set(enabled);
+        widget_host::apply(enabled);
+        self.persist_settings();
+    }
+
+    /// Writes the current choices back to the preferences file. The settings
+    /// sheet calls this when it closes; the dot switch calls it immediately so
+    /// a crash cannot lose that one choice.
+    pub fn persist_settings(&self) {
+        let settings = Settings {
+            widget_enabled: self.widget_enabled.get(),
+            wrap_in_folder: self.wrap_in_folder.get(),
+            reveal_after_extract: self.reveal_after_extract.get(),
+            show_system_files: self.show_system_files.get(),
+            theme_mode: self.theme_mode(),
+            default_create_format: self.default_create_format.get(),
+            default_create_level: self.default_create_level.get(),
+        };
+        let _ = settings.save();
     }
 
     /// The active appearance, defaulting to light before any choice is made.

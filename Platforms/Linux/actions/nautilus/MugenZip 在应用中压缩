@@ -1,0 +1,2 @@
+#!/bin/sh
+exec mugenzip --verb compress-ui $NAUTILUS_SCRIPT_SELECTED_FILE_PATHS

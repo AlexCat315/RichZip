@@ -9,12 +9,14 @@ use cove_ui::hosts::shell_services::{self, ShellVerb};
 
 use crate::compress_service;
 use crate::extract_service;
+use crate::hash_service::{self, Algorithm};
 use crate::menu_bar::menu_bar;
 use crate::model::AppModel;
 use crate::theme;
 use crate::views::RootView;
 
 pub fn application() -> ApplicationLaunch {
+    crate::widget_host::record_main_pid();
     let model = Rc::new(AppModel::new());
     let root = RootView {
         model: model.clone(),
@@ -24,38 +26,94 @@ pub fn application() -> ApplicationLaunch {
         &[
             ShellVerb {
                 id: "open",
-                label: Some("用 MugenZip 打开"),
+                label: Some("在 MugenZip 打开"),
                 selector: "coveOpenService:",
             },
             ShellVerb {
                 id: "extract-here",
-                label: Some("解压到此处"),
+                label: Some("解压到当前目录"),
                 selector: "coveExtractHereService:",
             },
             ShellVerb {
                 id: "extract-folder",
-                label: Some("解压到同名文件夹"),
+                label: Some("解压到同名目录"),
                 selector: "coveExtractFolderService:",
             },
             ShellVerb {
-                id: "compress-here",
-                label: Some("压缩到此处"),
-                selector: "coveCompressHereService:",
+                id: "smart-extract",
+                label: Some("智能解压到同名目录"),
+                selector: "coveSmartExtractService:",
+            },
+            ShellVerb {
+                id: "compress-zip",
+                label: Some("压缩至 ZIP"),
+                selector: "coveCompressZipService:",
+            },
+            ShellVerb {
+                id: "compress-7z",
+                label: Some("压缩至 7Z"),
+                selector: "coveCompressSevenZService:",
+            },
+            ShellVerb {
+                id: "compress-ui",
+                label: Some("在 MugenZip 中压缩"),
+                selector: "coveCompressPanelService:",
+            },
+            ShellVerb {
+                id: "hash-crc32",
+                label: Some("校验 CRC32"),
+                selector: "coveHashCrc32Service:",
+            },
+            ShellVerb {
+                id: "hash-md5",
+                label: Some("校验 MD5"),
+                selector: "coveHashMd5Service:",
+            },
+            ShellVerb {
+                id: "hash-sha1",
+                label: Some("校验 SHA-1"),
+                selector: "coveHashSha1Service:",
+            },
+            ShellVerb {
+                id: "hash-sha256",
+                label: Some("校验 SHA-256"),
+                selector: "coveHashSha256Service:",
+            },
+            ShellVerb {
+                id: "hash-sha512",
+                label: Some("校验 SHA-512"),
+                selector: "coveHashSha512Service:",
             },
         ],
         move |verb, paths| {
             /* "open" wants the window; the in-place verbs do not, so they work
                headlessly and hand the app straight back to whatever was in front. */
-            if matches!(verb, "extract-here" | "extract-folder" | "compress-here") {
+            if verb.starts_with("extract") || verb.starts_with("hash") {
                 shell_services::yield_to_background();
             }
             let mut compress_paths: Vec<PathBuf> = Vec::new();
+            let mut handoff_paths: Vec<PathBuf> = Vec::new();
             for path in paths {
                 let path = PathBuf::from(path);
                 match verb {
-                    "extract-here" => extract_service::run(path, extract_service::Placement::Here),
-                    "extract-folder" => extract_service::run(path, extract_service::Placement::IntoFolder),
-                    "compress-here" => compress_paths.push(path),
+                    "extract-here" => {
+                        extract_service::run(path, extract_service::Placement::Here)
+                    }
+                    "extract-folder" => {
+                        extract_service::run(path, extract_service::Placement::IntoFolder)
+                    }
+                    "smart-extract" => {
+                        extract_service::run(path, extract_service::Placement::Smart)
+                    }
+                    "compress-zip" | "compress-7z" | "compress-here" => {
+                        compress_paths.push(path)
+                    }
+                    "compress-ui" => handoff_paths.push(path),
+                    "hash-crc32" => hash_async(path, Algorithm::Crc32),
+                    "hash-md5" => hash_async(path, Algorithm::Md5),
+                    "hash-sha1" => hash_async(path, Algorithm::Sha1),
+                    "hash-sha256" => hash_async(path, Algorithm::Sha256),
+                    "hash-sha512" => hash_async(path, Algorithm::Sha512),
                     _ => {
                         if !services.is_busy() {
                             services.open(path);
@@ -64,11 +122,19 @@ pub fn application() -> ApplicationLaunch {
                 }
             }
             if !compress_paths.is_empty() {
+                let format = if verb == "compress-7z" {
+                    mugenzip_core::CreateFormat::SevenZ
+                } else {
+                    services.default_create_format.get()
+                };
                 compress_service::run(
                     compress_paths,
-                    services.default_create_format.get(),
+                    format,
                     services.default_create_level.get(),
                 );
+            }
+            if !handoff_paths.is_empty() {
+                services.open_create_with(handoff_paths);
             }
         },
     );
@@ -90,6 +156,12 @@ pub fn application() -> ApplicationLaunch {
         })
         .menu_bar(menu_bar(model))
         .diagnostics(cove_ui::hosts::desktop::diagnostics::devtools::factory())
+}
+
+fn hash_async(path: PathBuf, algorithm: Algorithm) {
+    std::thread::spawn(move || {
+        let _ = hash_service::write_report(&path, algorithm);
+    });
 }
 
 /// App-wide theme provider, mounted for the whole window chrome and content.
