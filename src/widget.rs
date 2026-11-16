@@ -4,9 +4,9 @@
 //! window. Mature desktop floating assistants (AssistiveTouch, SoftCircle,
 //! 腾讯管家侠) are all a **two-layer** component, not a decorative sphere:
 //!
-//!   1. A quiet, translucent dot that stays out of the way. It fades when idle,
-//!      brightens on hover, accepts dragged archives, and can be hidden from
-//!      the tray or a global hotkey.
+//!   1. A solid, opaque dot that stays out of the way. It lifts on hover,
+//!      accepts dragged archives, and can be hidden from the tray or a global
+//!      hotkey.
 //!   2. A radial menu that opens on click, with six icon-and-label actions
 //!      arranged in a ring, hover feedback, and click-outside to dismiss.
 //!
@@ -21,8 +21,10 @@ use std::rc::Rc;
 
 use cove_ui::ApplicationLaunch;
 use cove_ui::compose::modifiers::style::style_modifiers::AppearanceExt;
-use cove_ui::compose::modifiers::interaction::HoverExt;
+use cove_ui::compose::modifiers::interaction::{AccessibilityExt, HitTestingExt, HoverExt};
 use cove_ui::compose::modifiers::layout::LayoutFrameExt;
+use cove_ui::compose::prelude::{SemanticFontRef, Text};
+use cove_ui::compose::theme::tokens::semantic_modifiers::SemanticStyleViewExt;
 use cove_ui::compose::primitives::interaction::{DroppedFile, FileDropZone};
 use cove_ui::compose::primitives::media::ui_icon_catalog;
 use cove_ui::compose::primitives::media::{Image, ImageSource};
@@ -30,8 +32,12 @@ use cove_ui::compose::theme::styles::buttons::button_style::ButtonStyleViewExt;
 use cove_ui::compose::theme::styles::buttons::button_style::plain;
 use cove_ui::compose::{AnyView, PrimitiveView, impl_primitive_view};
 use cove_ui::composition::layout::{Layout, LayoutContainer, LayoutSubview, ProposedViewSize};
-use cove_ui::composition::{DynamicField, Scope, TupleView, View};
-use cove_ui::core::scene::{LayoutNode, Node, Point, Rect, Size};
+use cove_ui::composition::{DynamicField, Scope, TupleView, View, ViewExt};
+use cove_ui::core::scene::{
+    EventPhase, EventResult, HoverPhase, InputHandlerRoute, InteractionRegistryHolder,
+    LayoutNode, Node, Point, PointerCaptureHolder, PointerPhase, Rect, Size,
+};
+use cove_ui::platform::MouseButton;
 use cove_ui::core::{Color, DrawList, State};
 use cove_ui::hosts::desktop::application::composition::AppDisplayHandleHolder;
 use cove_ui::hosts::status_item::{self, StatusEntry};
@@ -70,7 +76,7 @@ const STATUS_MENU: &[StatusEntry] = &[
 
 /// What a ring action does. Kept as data so the same table drives drawing,
 /// hit-testing and execution — adding an action touches exactly one place.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Command {
     Home,
     Extract,
@@ -104,6 +110,31 @@ fn item_center(index: usize, size: f32) -> Point {
     )
 }
 
+/// Labels live **outside** each action well — above, below, right, left — so
+/// they never crowd the centre close target or overlap a neighbouring well.
+fn label_rect(index: usize, size: f32) -> (f32, f32, f32, f32) {
+    let p = item_center(index, size);
+    let w = 40.0;
+    let h = 18.0;
+    match index {
+        0 => (p.x - w / 2.0, p.y - ITEM_RADIUS - 4.0 - h, w, h),
+        3 => (p.x - w / 2.0, p.y + ITEM_RADIUS + 4.0, w, h),
+        1 | 2 => (p.x + ITEM_RADIUS + 4.0, p.y - h / 2.0, w, h),
+        _ => (p.x - ITEM_RADIUS - 4.0 - w, p.y - h / 2.0, w, h),
+    }
+}
+
+/// One action's clickable region: the icon well plus its label.
+fn action_rect(index: usize, size: f32) -> (f32, f32, f32, f32) {
+    let p = item_center(index, size);
+    let (lx, ly, lw, lh) = label_rect(index, size);
+    let x0 = (p.x - 30.0).min(lx);
+    let y0 = (p.y - 30.0).min(ly);
+    let x1 = (p.x + 30.0).max(lx + lw);
+    let y1 = (p.y + 30.0).max(ly + lh);
+    (x0, y0, x1 - x0, y1 - y0)
+}
+
 /// Builds the floating-menu application declaration.
 pub fn widget_application() -> ApplicationLaunch {
     let state = WidgetState::default();
@@ -115,7 +146,7 @@ pub fn widget_application() -> ApplicationLaunch {
         app.window.height = DOT as i32;
         app.window.min_width = DOT as i32;
         app.window.min_height = DOT as i32;
-        app.window.title_bar_style = cove_ui::hosts::desktop::application::configuration::AppWindowTitleBarStyle::HiddenInset;
+        app.window.title_bar_style = cove_ui::hosts::desktop::application::configuration::AppWindowTitleBarStyle::Borderless;
         app.window.shows_dock_icon = false;
         app.window.shape = Some(WindowShape::Ellipse);
         app.window.rendering.clear_color = Some([0.0, 0.0, 0.0, 0.0]);
@@ -132,6 +163,18 @@ struct WidgetState {
     /// Index of the hovered ring action, or -1.
     active: State<i32>,
     display: Rc<RefCell<Option<AppDisplayHandle>>>,
+    drag: Rc<RefCell<DragSession>>,
+}
+
+/// Tracks a press on the dot so a short click expands the ring and a longer
+/// move drags the whole shaped window.
+#[derive(Default)]
+struct DragSession {
+    active: bool,
+    moved: bool,
+    origin: (f32, f32),
+    pointer_origin: (f32, f32),
+    offset: (f32, f32),
 }
 
 impl Default for WidgetState {
@@ -144,6 +187,7 @@ impl Default for WidgetState {
             dot_hovered: State::new(false),
             active: State::new(-1),
             display: Rc::new(RefCell::new(None)),
+            drag: Rc::new(RefCell::new(DragSession::default())),
         }
     }
 }
@@ -160,15 +204,17 @@ impl WidgetState {
         };
         self.hooks_installed.set(true);
         *self.display.borrow_mut() = Some(display.clone());
+        // The dot is a resident helper: it must stay reachable above normal
+        // windows and must never acquire a Dock tile.
+        display.set_window_always_on_top(true);
 
         // Display queries can fail while SDL's video subsystem boots. Retry on
         // the UI run loop; in environments that never report displays the dot
         // simply keeps the window manager's default placement.
         park_at_top_right(&display, 0);
 
-        let hotkey_display = display.clone();
-        let hotkey_visible = self.visible.clone();
         let hotkey_state = self.clone();
+        let hotkey_display = display.clone();
         let _ = display.register_hotkey(
             HotKey::new(
                 HOTKEY_ID,
@@ -176,21 +222,32 @@ impl WidgetState {
                 b'K' as i32,
             ),
             Rc::new(move || {
-                // A hidden dot must be shown before it can expand.
-                hotkey_state.visible.set(true);
-                hotkey_display.show_window();
-                toggle(&hotkey_display, &hotkey_visible);
+                // Shortcut behaviour is "call the menu up", not "toggle a
+                // hidden flag": a hidden dot is shown already expanded, and a
+                // visible dot opens or closes its ring.
+                if !hotkey_state.visible.get() {
+                    hotkey_state.visible.set(true);
+                    hotkey_display.show_window();
+                    hotkey_state.set_expanded(true);
+                } else {
+                    hotkey_state.set_expanded(!hotkey_state.expanded.get());
+                }
             }),
         );
 
-        let tray_visible = self.visible.clone();
+        let tray_state = self.clone();
         let tray_display = display.clone();
-        let _ = status_item::install("", "MugenZip 悬浮菜单", STATUS_MENU, move |id| match id {
-            "open" => launch_browser(),
-            "toggle" => toggle(&tray_display, &tray_visible),
-            "quit" => std::process::exit(0),
-            _ => {}
-        });
+        let _ = status_item::install(
+            "archivebox",
+            "MugenZip 悬浮菜单",
+            STATUS_MENU,
+            move |id| match id {
+                "open" => open_home(),
+                "toggle" => toggle(&tray_display, &tray_state),
+                "quit" => quit(&tray_display),
+                _ => {}
+            },
+        );
     }
 
     /// Grow or shrink the shaped window while keeping the dot's centre fixed.
@@ -210,14 +267,19 @@ impl WidgetState {
         x = cx - new / 2.0;
         y = cy - new / 2.0;
 
-        // Keep the expanded disc on screen when the dot is parked at an edge.
+        // Keep the disc on whichever monitor the dot actually occupies. The
+        // old implementation clamped to display 0, which pushed a dot parked
+        // on a secondary screen back to the primary one.
         if expanded {
-            if let Some(bounds) = display
-                .display_bounds(0, true)
-                .or_else(|| display.display_bounds(0, false))
-            {
-                x = x.clamp(bounds.x + MARGIN, bounds.x + bounds.width - DISC - MARGIN);
-                y = y.clamp(bounds.y + MARGIN, bounds.y + bounds.height - DISC - MARGIN);
+            if let Some((bx, by, bw, bh)) = bounds_containing(&display, cx, cy) {
+                x = x.clamp(
+                    bx + MARGIN,
+                    (bx + bw - DISC - MARGIN).max(bx + MARGIN),
+                );
+                y = y.clamp(
+                    by + MARGIN,
+                    (by + bh - DISC - MARGIN).max(by + MARGIN),
+                );
             }
         }
 
@@ -229,10 +291,14 @@ impl WidgetState {
     }
 
     fn execute(&self, command: Command) {
-        self.set_expanded(false);
-        let display = self.display.borrow().clone();
+        let display = self
+            .display
+            .try_borrow()
+            .ok()
+            .and_then(|display| display.clone());
         match command {
-            Command::Home | Command::Settings => launch_browser(),
+            Command::Home => open_home(),
+            Command::Settings => open_settings(),
             Command::Extract => {
                 if let Some(display) = display {
                     display.request_open_file(
@@ -257,6 +323,9 @@ impl WidgetState {
                         true,
                         None,
                         Box::new(|paths| {
+                            if paths.is_empty() {
+                                return;
+                            }
                             compress_service::run(
                                 paths.into_iter().map(PathBuf::from).collect(),
                                 mugenzip_core::CreateFormat::Zip,
@@ -272,8 +341,18 @@ impl WidgetState {
                     display.hide_window();
                 }
             }
-            Command::Quit => std::process::exit(0),
+            Command::Quit => {
+                if let Some(display) = display {
+                    quit(&display);
+                } else {
+                    std::process::exit(0);
+                }
+                return;
+            }
         }
+        // Collapse last. Resizing the shaped window from inside the click
+        // handler can rebuild the view before the action has been dispatched.
+        self.set_expanded(false);
     }
 }
 
@@ -286,6 +365,15 @@ fn park_at_top_right(display: &AppDisplayHandle, attempt: u32) {
             bounds.x + bounds.width - DOT - MARGIN,
             bounds.y + bounds.height * 0.35,
         );
+        // A window resize or the initial show recentres the window on the
+        // following frames, so re-apply a few times instead of once.
+        if attempt >= 8 {
+            return;
+        }
+        let display = display.clone();
+        cove_ui::core::scene::UIWorkSchedulerHolder::schedule(Rc::new(move || {
+            park_at_top_right(&display, attempt + 1);
+        }));
         return;
     }
     if attempt >= 30 {
@@ -297,33 +385,315 @@ fn park_at_top_right(display: &AppDisplayHandle, attempt: u32) {
     }));
 }
 
-fn toggle(display: &AppDisplayHandle, visible: &Rc<Cell<bool>>) {
-    if visible.replace(!visible.get()) {
+fn toggle(display: &AppDisplayHandle, state: &WidgetState) {
+    if state.visible.get() {
+        // Park the dot before hiding: the tray and the hotkey both expect the
+        // next show to start collapsed at the dot's old anchor.
+        state.set_expanded(false);
+        state.visible.set(false);
         display.hide_window();
     } else {
+        state.visible.set(true);
         display.show_window();
     }
 }
 
-fn launch_browser() {
-    let Ok(executable) = std::env::current_exe() else {
-        return;
-    };
-    let _ = std::process::Command::new(executable).spawn();
+/// The monitor a point belongs to, preferring its usable area. Falls back to
+/// the primary display so a window parked before displays are reported still
+/// gets a sensible bound.
+fn bounds_containing(display: &AppDisplayHandle, x: f32, y: f32) -> Option<(f32, f32, f32, f32)> {
+    let mut fallback = None;
+    for index in 0..display.display_count().max(1) {
+        let bounds = display
+            .display_bounds(index, true)
+            .or_else(|| display.display_bounds(index, false))?;
+        if fallback.is_none() {
+            fallback = Some((bounds.x, bounds.y, bounds.width, bounds.height));
+        }
+        if x >= bounds.x
+            && y >= bounds.y
+            && x < bounds.x + bounds.width
+            && y < bounds.y + bounds.height
+        {
+            return Some((bounds.x, bounds.y, bounds.width, bounds.height));
+        }
+    }
+    fallback
 }
 
-fn extract_dropped(files: Vec<DroppedFile>) {
-    for file in files {
-        if file.is_directory {
-            continue;
-        }
-        extract_service::run(PathBuf::from(file.path), extract_service::Placement::IntoFolder);
+fn is_archive(path: &PathBuf) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ARCHIVE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+/// A drop of archives extracts each one beside itself; anything else — a file
+/// or a folder, or a mix — becomes one ZIP. That is the only reading of a
+/// generic drop that is useful without asking a second question.
+fn handle_dropped(files: Vec<DroppedFile>) {
+    if files.is_empty() {
+        return;
     }
+    let paths: Vec<PathBuf> = files.into_iter().map(|file| PathBuf::from(file.path)).collect();
+    if paths.iter().all(|path| is_archive(path)) {
+        for path in paths {
+            extract_service::run(path, extract_service::Placement::IntoFolder);
+        }
+    } else {
+        compress_service::run(
+            paths,
+            mugenzip_core::CreateFormat::Zip,
+            mugenzip_core::CompressionLevel::Balanced,
+        );
+    }
+}
+
+fn open_home() {
+    open_main(None);
+}
+
+fn open_settings() {
+    open_main(Some("--settings"));
+}
+
+/// Brings the browser window forward, starting it when it is not running.
+///
+/// The dot is a separate bundle (`MugenZipWidget.app`), so the browser is a
+/// distinct app rather than a second copy of the same bundle. That is what
+/// makes the "already running" branch reliable: macOS cannot silently route
+/// this request back into the dot itself.
+fn open_main(fallback_arg: Option<&str>) {
+    if let Some(pid) = main_process_id() {
+        activate_main(pid, fallback_arg.is_some());
+        return;
+    }
+    let executable = main_executable();
+    let mut command = std::process::Command::new(executable);
+    if let Some(arg) = fallback_arg {
+        command.arg(arg);
+    }
+    let _ = command.spawn();
+}
+
+/// PID of a live browser instance, or `None` when only the dot is running.
+/// The helper bundle lives at `MugenZipWidget.app`; the browser is the only
+/// process whose path contains `MugenZip.app`.
+fn main_process_id() -> Option<i32> {
+    #[cfg(unix)]
+    {
+        let output = std::process::Command::new("ps")
+            .args(["-axo", "pid=,command="])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            let line = line.trim_start();
+            let Some((pid, command)) = line.split_once(char::is_whitespace) else {
+                continue;
+            };
+            let Ok(pid) = pid.parse::<i32>() else {
+                continue;
+            };
+            if command.contains("MugenZip.app/Contents/MacOS/mugenzip")
+                && !command.contains("--widget")
+            {
+                return Some(pid);
+            }
+        }
+        None
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+fn main_executable() -> PathBuf {
+    let Ok(executable) = std::env::current_exe() else {
+        return PathBuf::from("mugenzip");
+    };
+    // `.../MugenZipWidget.app/Contents/MacOS/mugenzip` -> sibling browser.
+    let path = executable.to_string_lossy();
+    if let Some(stem) = path.find("MugenZipWidget.app") {
+        let browser = format!("{}MugenZip.app{}", &path[..stem], &path[stem + "MugenZipWidget.app".len()..]);
+        if PathBuf::from(&browser).is_file() {
+            return PathBuf::from(browser);
+        }
+    }
+    executable
+}
+
+#[cfg(target_os = "macos")]
+fn activate_main(pid: i32, settings: bool) {
+    let mut script = format!(
+        "tell application \"System Events\"\nset frontmost of process id {pid} to true",
+    );
+    if settings {
+        script.push_str("\ndelay 0.2\nkeystroke \",\" using command down");
+    }
+    script.push_str("\nend tell");
+    let _ = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .status();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn activate_main(_pid: i32, _settings: bool) {}
+
+fn quit(display: &AppDisplayHandle) {
+    // Let the runtime unhook the global hotkey, remove the status item and
+    // tear down the shaped window instead of killing the process.
+    display.quit();
 }
 
 // ---------------------------------------------------------------------------
 // View composition
 // ---------------------------------------------------------------------------
+
+/// The collapsed dot. It owns pointer capture so a drag keeps following the
+/// cursor even after the window has moved out from under it.
+struct DragDot {
+    state: WidgetState,
+}
+
+impl PrimitiveView for DragDot {
+    fn make_node(&self) -> Node {
+        let node = Node::new();
+        node.set_is_hit_testable(true);
+        node
+    }
+
+    fn update_node(&self, node: &Node) {
+        let Some(registry) = InteractionRegistryHolder::current() else {
+            return;
+        };
+        let drag_state = self.state.clone();
+        registry.set_hover(
+            node,
+            Rc::new(move |phase| {
+                // Rebuilding the view mid-drag would replace the node that owns
+                // pointer capture, so hover only updates while no press is live.
+                if !drag_state.drag.borrow().active {
+                    drag_state.dot_hovered.set(phase == HoverPhase::Enter);
+                }
+            }),
+        );
+
+        let pointer_state = self.state.clone();
+        let pointer_node = node.downgrade();
+        registry.set_pointer(
+            node,
+            InputHandlerRoute::control(),
+            Rc::new(move |event, phase, event_phase| {
+                if event_phase == EventPhase::Capture || event.button != MouseButton::Left {
+                    return EventResult::Ignored;
+                }
+                match phase {
+                    PointerPhase::Down => {
+                        let Some(display) = pointer_state
+                            .display
+                            .try_borrow()
+                            .ok()
+                            .and_then(|display| display.clone())
+                        else {
+                            return EventResult::Ignored;
+                        };
+                        let origin = display.window_position().unwrap_or((0.0, 0.0));
+                        let pointer_origin = display.global_pointer().unwrap_or(origin);
+                        *pointer_state.drag.borrow_mut() = DragSession {
+                            active: true,
+                            moved: false,
+                            origin,
+                            pointer_origin,
+                            offset: (0.0, 0.0),
+                        };
+                        if let Some(node) = Node::upgrade(&pointer_node)
+                            && let Some(capture) = PointerCaptureHolder::current()
+                        {
+                            capture.acquire(&node, true);
+                        }
+                        EventResult::Handled
+                    }
+                    PointerPhase::Up => {
+                        let (active, moved, origin, pointer_origin) = {
+                            let mut drag = pointer_state.drag.borrow_mut();
+                            let snapshot = (drag.active, drag.moved, drag.origin, drag.pointer_origin);
+                            drag.active = false;
+                            snapshot
+                        };
+                        if let Some(node) = Node::upgrade(&pointer_node)
+                            && let Some(capture) = PointerCaptureHolder::current()
+                            && capture.target().as_ref() == Some(&node)
+                        {
+                            capture.release();
+                        }
+                        if !active {
+                            return EventResult::Ignored;
+                        }
+                        if moved
+                            && let Some(display) = pointer_state
+                                .display
+                                .try_borrow()
+                                .ok()
+                                .and_then(|display| display.clone())
+                            && let Some(pointer) = display.global_pointer()
+                        {
+                            display.set_window_position(
+                                origin.0 + pointer.0 - pointer_origin.0,
+                                origin.1 + pointer.1 - pointer_origin.1,
+                            );
+                        }
+                        if !moved {
+                            pointer_state.set_expanded(!pointer_state.expanded.get());
+                        }
+                        EventResult::Handled
+                    }
+                }
+            }),
+        );
+
+        let motion_state = self.state.clone();
+        registry.set_motion(
+            node,
+            InputHandlerRoute::control(),
+            Rc::new(move |event, phase| {
+                if phase == EventPhase::Capture {
+                    return EventResult::Ignored;
+                }
+                let mut drag = motion_state.drag.borrow_mut();
+                if !drag.active {
+                    return EventResult::Ignored;
+                }
+                let display = motion_state
+                    .display
+                    .try_borrow()
+                    .ok()
+                    .and_then(|display| display.clone());
+                let pointer = display.as_ref().and_then(|display| display.global_pointer());
+                if let Some(pointer) = pointer {
+                    drag.offset = (
+                        pointer.0 - drag.pointer_origin.0,
+                        pointer.1 - drag.pointer_origin.1,
+                    );
+                } else {
+                    drag.offset.0 += event.delta_x;
+                    drag.offset.1 += event.delta_y;
+                }
+                if drag.offset.0.abs() + drag.offset.1.abs() > 4.0 {
+                    drag.moved = true;
+                }
+                let target = (drag.origin.0 + drag.offset.0, drag.origin.1 + drag.offset.1);
+                drop(drag);
+                if let Some(display) = display {
+                    display.set_window_position(target.0, target.1);
+                }
+                EventResult::Handled
+            }),
+        );
+    }
+}
+
+impl_primitive_view!(DragDot);
 
 struct MenuView {
     state: WidgetState,
@@ -344,43 +714,51 @@ impl View for MenuView {
                 .frame_size(size, size),
         );
 
-        // Bottom layer: clicking the dot expands; clicking the disc's empty
-        // space dismisses. Hover here drives the idle-fade of the dot.
-        let toggle_state = self.state.clone();
-        let hover_state = self.state.clone();
-        let backdrop = AnyView::new(
-            AnyView::new(
-                cove_ui::compose::primitives::controls::Button::new(
-                    cove_ui::composition::EmptyView {},
-                    move || toggle_state.set_expanded(!toggle_state.expanded.get()),
-                )
-                .button_style(plain()),
-            )
+        // Collapsed dot: press-and-drag moves the shaped window, a plain click
+        // expands the ring. Replacing the old full-window Button avoids the
+        // click-vs-drag ambiguity that made the dot feel nailed down.
+        let dot = AnyView::new(DragDot { state: self.state.clone() })
             .frame_size(size, size)
-            .on_hover(move |entering| hover_state.dot_hovered.set(entering)),
-        );
+            .erased();
 
-        let mut layers: Vec<AnyView> = vec![canvas, backdrop];
-
+        // Collapsed, the whole dot is one button. Expanded, that full-window
+        // button would swallow every ring action, so slot 1 becomes a
+        // non-interactive placeholder and the centre X is the dismiss target.
+        let mut layers: Vec<AnyView> = vec![canvas];
         if expanded {
+            // A laid-out, non-interactive placeholder keeps the radial
+            // index contract (0/1 full-bleed, 2 centre, 3..8 ring, 9..14
+            // labels). EmptyView is optimised away and shifts every hit.
+            layers.push(
+                Text::new(" ")
+                    .frame_size(size, size)
+                    .allows_hit_testing(false)
+                    .accessibility_hidden(true)
+                    .erased(),
+            );
+
             // Centre close target.
             let close_state = self.state.clone();
-            layers.push(AnyView::new(
-                cove_ui::compose::primitives::controls::Button::new(
-                    cove_ui::composition::EmptyView {},
-                    move || close_state.set_expanded(false),
+            layers.push(
+                AnyView::new(
+                    cove_ui::compose::primitives::controls::Button::new(
+                        cove_ui::composition::EmptyView {},
+                        move || close_state.set_expanded(false),
+                    )
+                    .button_style(plain()),
                 )
-                .button_style(plain()),
-            ));
+                .frame_size(60.0, 60.0)
+                .erased(),
+            );
 
             // Six hit targets on the ring (transparent — the icon and its
-            // circular well are drawn by the canvas), then six text labels
-            // sitting just below each icon so they never cover the glyph.
+            // circular well are drawn by the canvas), then six text labels.
             for (index, entry) in ENTRIES.iter().enumerate() {
                 let hit_state = self.state.clone();
                 let command = entry.command;
                 let hover_state = self.state.clone();
-                layers.push(AnyView::new(
+                let (_, _, width, height) = action_rect(index, DISC);
+                layers.push(
                     AnyView::new(
                         cove_ui::compose::primitives::controls::Button::new(
                             cove_ui::composition::EmptyView {},
@@ -388,29 +766,22 @@ impl View for MenuView {
                         )
                         .button_style(plain()),
                     )
+                    .frame_size(width, height)
                     .on_hover(move |entering| {
                         hover_state.active.set(if entering { index as i32 } else { -1 });
-                    }),
-                ));
+                    })
+                    .erased(),
+                );
             }
-            for (index, entry) in ENTRIES.iter().enumerate() {
-                let label_state = self.state.clone();
-                let command = entry.command;
-                let hover_state = self.state.clone();
-                layers.push(AnyView::new(
-                    AnyView::new(
-                        cove_ui::compose::primitives::controls::Button::title(
-                            entry.label,
-                            move || label_state.execute(command),
-                        )
-                        .button_style(plain())
-                        .foreground_color(Color::WHITE),
-                    )
-                    .on_hover(move |entering| {
-                        hover_state.active.set(if entering { index as i32 } else { -1 });
-                    }),
-                ));
+            for entry in ENTRIES.iter() {
+                let label = Text::new(entry.label)
+                    .alignment(cove_ui::text::TextAlignment::Center)
+                    .semantic_font(SemanticFontRef::caption())
+                    .foreground_color(Color { a: 0.86, ..Color::WHITE });
+                layers.push(label.frame_size(40.0, 18.0).erased());
             }
+        } else {
+            layers.push(dot);
         }
 
         // A custom layout is required here: ZStack centres every child, which
@@ -423,8 +794,11 @@ impl View for MenuView {
         .frame_size(size, size);
 
         let targeted_flag = self.state.clone();
-        let drop = FileDropZone::new(extract_dropped, stack)
-            .accepted_extensions(ARCHIVE_EXTENSIONS)
+        let drop = FileDropZone::new(handle_dropped, stack)
+            // Archives extract; ordinary files and folders compress. Restricting
+            // the zone to archive extensions made the "compress" side of the dot
+            // unreachable by drag, which is half of its purpose.
+            .allows_directories(true)
             .maximum_files(16)
             .shows_chrome(false)
             .is_targeted(self.state.targeted.binding())
@@ -471,15 +845,9 @@ impl Layout for RadialLayout {
                     full(subview);
                     continue;
                 }
-                2 if self.expanded => (self.size / 2.0 - 32.0, self.size / 2.0 - 32.0, 64.0, 64.0),
-                i if self.expanded && (3..9).contains(&i) => {
-                    let p = item_center(i - 3, self.size);
-                    (p.x - 31.0, p.y - 31.0, 62.0, 62.0)
-                }
-                i if self.expanded && (9..15).contains(&i) => {
-                    let p = item_center(i - 9, self.size);
-                    (p.x - 40.0, p.y + ITEM_RADIUS + 3.0, 80.0, 20.0)
-                }
+                2 if self.expanded => (self.size / 2.0 - 30.0, self.size / 2.0 - 30.0, 60.0, 60.0),
+                i if self.expanded && (3..9).contains(&i) => action_rect(i - 3, self.size),
+                i if self.expanded && (9..15).contains(&i) => label_rect(i - 9, self.size),
                 _ => (0.0, 0.0, 0.0, 0.0),
             };
             subview.place(
@@ -534,52 +902,62 @@ impl MenuCanvas {
         let cx = origin.x + DOT / 2.0;
         let cy = origin.y + DOT / 2.0;
         let center = Point::new(cx, cy);
-        let r = DOT / 2.0 - 3.0;
+        let r = DOT / 2.0 - 2.5;
         let lit = self.targeted || self.dot_hovered;
 
-        // Idle dots sit at roughly half opacity so they never compete with the
-        // content underneath; hovering or dragging brings them to full.
-        let alpha = if self.targeted { 0.95 } else if lit { 0.88 } else { 0.48 };
-        let body = if self.targeted { rgb(0x2E, 0xC8, 0x86) } else { rgb(0x1B, 0x25, 0x22) };
-
+        // Solid, not translucent: a floating control that lets terminal text
+        // bleed through reads like a chat avatar, not an archive tool.
+        let body = if self.targeted {
+            rgb(0x2E, 0xC8, 0x86)
+        } else if lit {
+            rgb(0x22, 0x30, 0x2B)
+        } else {
+            rgb(0x15, 0x1E, 0x1B)
+        };
         let _ = list.add_disk_shaded(center, r, move |_x, _y| {
-            Color { a: alpha, ..body }
+            Color { a: 1.0, ..body }
         });
-        // Fine light edge keeps the dot legible on both light and dark walls.
-        let _ = list.add_shaded_annulus(center, r - 1.2, r, |_x, _y| {
-            Color { a: if lit { 0.55 } else { 0.30 }, ..Color::WHITE }
+        // A crisp rim is what keeps a small circle from reading as a flat
+        // UI swatch; the body itself stays one clean, solid colour.
+        let _ = list.add_shaded_annulus(center, r - 1.0, r, |_x, _y| {
+            Color { a: if lit { 0.58 } else { 0.32 }, ..Color::WHITE }
         });
 
-        self.draw_icon(list, ENTRIES.len(), "archive", cx, cy, 22.0, 0.98);
+        self.draw_icon(list, ENTRIES.len(), "archive", cx, cy, 20.0, 0.98);
     }
 
     fn paint_disc(&self, list: &mut DrawList, origin: Point) {
         let cx = origin.x + DISC / 2.0;
         let cy = origin.y + DISC / 2.0;
         let center = Point::new(cx, cy);
-        let r = DISC / 2.0 - 2.0;
+        let r = DISC / 2.0 - 6.0;
 
-        // Frosted dark disc: a subtle vertical gradient reads as a translucent
-        // material rather than a flat grey circle.
+        // Contact shadow sits just inside the silhouette, then the disc itself
+        // leaves the masked corners fully transparent.
+        let _ = list.add_disk_shaded(center, r + 6.0, |_x, _y| {
+            Color { r: 0.0, g: 0.0, b: 0.0, a: 0.18 }
+        });
         let _ = list.add_disk_shaded(center, r, move |_x, y| {
             let t = ((y - cy) / r * 0.5 + 0.5).clamp(0.0, 1.0);
             Color {
-                r: 0.055 + 0.025 * (1.0 - t),
-                g: 0.075 + 0.030 * (1.0 - t),
-                b: 0.070 + 0.028 * (1.0 - t),
-                a: 0.94,
+                r: 0.050 + 0.022 * (1.0 - t),
+                g: 0.070 + 0.030 * (1.0 - t),
+                b: 0.064 + 0.028 * (1.0 - t),
+                a: 1.0,
             }
         });
         let _ = list.add_shaded_annulus(center, r - 1.5, r, |_x, _y| {
-            Color { a: 0.20, ..Color::WHITE }
+            Color { a: 0.22, ..Color::WHITE }
         });
-
         // Centre: a quiet recessed well holding the close glyph.
-        let well = 31.0;
+        let well = 30.0;
         let _ = list.add_disk_shaded(center, well, |_x, _y| {
-            Color { r: 1.0, g: 1.0, b: 1.0, a: 0.07 }
+            Color { r: 1.0, g: 1.0, b: 1.0, a: 0.065 }
         });
-        self.draw_icon(list, ENTRIES.len() + 1, "x", cx, cy, 20.0, 0.72);
+        let _ = list.add_shaded_annulus(center, well - 1.0, well, |_x, _y| {
+            Color { a: 0.10, ..Color::WHITE }
+        });
+        self.draw_icon(list, ENTRIES.len() + 1, "x", cx, cy, 19.0, 0.70);
 
         // Ring actions.
         for (index, entry) in ENTRIES.iter().enumerate() {
@@ -591,14 +969,14 @@ impl MenuCanvas {
 
             // Selected actions get an emerald fill; idle ones a faint well.
             let fill = if selected { rgb(0x2E, 0xB8, 0x7E) } else { Color::WHITE };
-            let fill_alpha = if selected { 0.92 } else { 0.10 };
+            let fill_alpha = if selected { 0.94 } else { 0.095 };
             let _ = list.add_disk_shaded(pc, ITEM_RADIUS, move |_x, _y| {
                 Color { a: fill_alpha, ..fill }
             });
             let _ = list.add_shaded_annulus(pc, ITEM_RADIUS - 1.0, ITEM_RADIUS, |_x, _y| {
-                Color { a: if selected { 0.55 } else { 0.14 }, ..Color::WHITE }
+                Color { a: if selected { 0.60 } else { 0.13 }, ..Color::WHITE }
             });
-            self.draw_icon(list, index, entry.icon, pcx, pcy, 22.0, 0.96);
+            self.draw_icon(list, index, entry.icon, pcx, pcy, 21.0, if selected { 0.98 } else { 0.90 });
         }
     }
 

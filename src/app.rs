@@ -6,7 +6,6 @@ use cove_ui::compose::adaptive::SurfaceEnvironment;
 use cove_ui::compose::theme::ThemeViewExt;
 use cove_ui::composition::{AnyView, DynamicField, Scope, View};
 use cove_ui::hosts::shell_services::{self, ShellVerb};
-use cove_ui::hosts::status_item::{self, StatusEntry};
 
 use crate::compress_service;
 use crate::extract_service;
@@ -73,37 +72,10 @@ pub fn application() -> ApplicationLaunch {
             }
         },
     );
-    /* Menu-bar extra: the app may be hidden after an in-place verb, so it needs a
-       way back. Picks that reach the handler have already unhidden the app (a
-       native status item cannot tick a hidden UI thread), so "open" and
-       "settings" only have to run their own action. */
-    const STATUS_MENU: &[StatusEntry] = &[
-        StatusEntry {
-            id: "open",
-            title: "打开压缩包…",
-        },
-        StatusEntry {
-            id: "settings",
-            title: "设置…",
-        },
-        StatusEntry {
-            id: "create",
-            title: "新建压缩包…",
-        },
-        StatusEntry { id: "", title: "" },
-        StatusEntry {
-            id: "quit",
-            title: "退出 MugenZip",
-        },
-    ];
+    // The menu-bar extra belongs to MugenZipWidget.app. Keeping a second
+    // status item here would put two archive boxes in the menu bar whenever
+    // the dot helper is running.
     let themed = model.clone();
-    let menu_model = model.clone();
-    let _ = status_item::install("archivebox", "MugenZip", STATUS_MENU, move |id| match id {
-        "open" => menu_model.open_dialog(),
-        "settings" => menu_model.open_settings(),
-        "create" => menu_model.open_create(),
-        _ => {}
-    });
     ApplicationLaunch::new(root)
         .configure(|app| {
             app.window.title = "MugenZip".into();

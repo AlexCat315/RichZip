@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use cove_ui::{NativeMenu, NativeMenuAction, NativeMenuBar, NativeMenuKeyModifiers};
+use cove_ui::{NativeMenu, NativeMenuAction, NativeMenuBar, NativeMenuItem, NativeMenuKeyModifiers};
 
 use crate::model::AppModel;
 
@@ -34,11 +34,21 @@ pub fn menu_bar(model: Rc<AppModel>) -> NativeMenuBar {
         NativeMenuAction::new("全选", move || select_all.select_all())
             .with_shortcut("a", NativeMenuKeyModifiers::primary()),
     );
+    let settings = model.clone();
     let archive = NativeMenu::named("归档")
         .item(NativeMenuAction::new("取消解压", move || cancel.cancel_extract()))
         .item(
             NativeMenuAction::new("上一级", move || up.navigate_up())
                 .with_shortcut("[", NativeMenuKeyModifiers::primary()),
         );
-    NativeMenuBar::new("MugenZip", vec![], vec![file, edit, archive])
+    // The app menu carries Settings so ⌘, works from the keyboard and from
+    // the floating menu's AppleScript hand-off when the browser is already up.
+    NativeMenuBar::new(
+        "MugenZip",
+        vec![NativeMenuItem::Action(
+            NativeMenuAction::new("设置…", move || settings.open_settings())
+                .with_shortcut(",", NativeMenuKeyModifiers::primary()),
+        )],
+        vec![file, edit, archive],
+    )
 }

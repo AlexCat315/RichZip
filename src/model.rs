@@ -550,8 +550,21 @@ impl AppModel {
     fn install_platform_hooks(&self) {
         let model = self.clone();
         OpenedDocuments::set_handler(Some(Rc::new(move |documents: Vec<String>| {
-            if let Some(first) = documents.into_iter().next() {
-                model.open(PathBuf::from(first));
+            for document in documents {
+                // The floating menu asks the already-running browser to come
+                // forward rather than starting a second copy of the app.
+                if let Some(route) = document.strip_prefix("mugenzip://") {
+                    if let Some(display) = AppDisplayHandleHolder::current() {
+                        display.show_window();
+                    }
+                    match route.trim_end_matches('/') {
+                        "settings" => model.open_settings(),
+                        "home" => model.close_settings(),
+                        _ => {}
+                    }
+                    continue;
+                }
+                model.open(PathBuf::from(document));
             }
         })));
 
@@ -577,11 +590,17 @@ impl AppModel {
 
         // A path on the command line opens at launch, the way `open -a` and
         // Windows' "Open with" deliver it. Finder's document event arrives
-        // through OpenedDocuments instead.
-        if let Some(argument) = std::env::args_os().nth(1) {
-            let path = PathBuf::from(argument);
-            if path.is_file() {
-                self.open(path);
+        // through OpenedDocuments instead. `--settings` is the deep-link entry
+        // used by the floating menu when no instance is alive yet.
+        let mut arguments = std::env::args_os().skip(1);
+        if let Some(argument) = arguments.next() {
+            if argument == "--settings" {
+                self.open_settings();
+            } else {
+                let path = PathBuf::from(argument);
+                if path.is_file() {
+                    self.open(path);
+                }
             }
         }
     }
