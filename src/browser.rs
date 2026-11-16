@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use mugenzip_core::{ArchiveEntry, EntryKind, format_size};
 
@@ -169,43 +169,6 @@ pub fn normalize_path(path: &str) -> String {
 
 fn split_parent(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
-}
-
-/// The host's own "save to" folders. Same idea on every platform, different
-/// names: Finder's Desktop/Documents/Downloads, Explorer's Desktop/Documents/
-/// Downloads, GNOME's XDG equivalents. Missing ones are simply not offered.
-pub fn known_dirs() -> Vec<(String, PathBuf)> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from);
-    let Some(home) = home else {
-        return Vec::new();
-    };
-    let mut dirs: Vec<(String, PathBuf)> = Vec::new();
-
-    #[cfg(target_os = "macos")]
-    {
-        dirs.push(("桌面".to_owned(), home.join("Desktop")));
-        dirs.push(("下载".to_owned(), home.join("Downloads")));
-        dirs.push(("文稿".to_owned(), home.join("Documents")));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        dirs.push(("桌面".to_owned(), home.join("Desktop")));
-        dirs.push(("下载".to_owned(), home.join("Downloads")));
-        dirs.push(("文档".to_owned(), home.join("Documents")));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        dirs.push(("桌面".to_owned(), home.join("Desktop")));
-        dirs.push(("下载".to_owned(), home.join("Downloads")));
-        dirs.push(("文档".to_owned(), home.join("Documents")));
-    }
-
-    dirs.retain(|(_, path)| path.is_dir());
-    dirs
 }
 
 /// The C `tm` prefix every platform shares; only the first nine fields are

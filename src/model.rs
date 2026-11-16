@@ -14,6 +14,7 @@ use cove_ui::core::scene::{ClipboardHolder, FilePicker, FilePickerFilter, Folder
 use cove_ui::core::work;
 use cove_ui::hosts::desktop::application::composition::AppDisplayHandleHolder;
 
+use crate::places::{self, PlaceRole};
 use mugenzip_core as engine;
 use mugenzip_core::{
     self, ArchiveEntry, ArchiveError, ExtractReport, ExtractionProgress, format_size, open_archive,
@@ -372,28 +373,49 @@ impl AppModel {
     // locations and the packages inside them
     // -----------------------------------------------------------------------
 
-    /// The places the sidebar offers: the host's known folders, in the order
-    /// Finder puts them.
+    /// The places the sidebar offers: whatever the host resolves for desktop,
+    /// documents and downloads, plus the home folder. The roles decide the
+    /// order; the labels are ours, so a localized folder name cannot change
+    /// where the app looks.
     pub fn locations(&self) -> Vec<(String, PathBuf)> {
-        browser::known_dirs()
+        places::known_places()
+            .into_iter()
+            .map(|place| (place.label.to_owned(), place.path))
+            .collect()
     }
 
-    /// First paint: look at 下载 so the window opens on something real instead
-    /// of an empty frame. Later paints leave the user's choice alone.
+    /// First paint: open on something real instead of an empty frame. Later
+    /// paints leave the user's choice alone. The preference is the folders a
+    /// person actually keeps archives in, not the names they happen to have.
     pub fn bootstrap_location(&self) {
         if self.location.get().is_some() {
             return;
         }
-        let dirs = self.locations();
-        let start = dirs
-            .iter()
-            .find(|(label, _)| label == "下载")
-            .or_else(|| dirs.first())
-            .map(|(_, path)| path.clone())
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+        // Resolved once: each lookup can hit the registry or the XDG file.
+        let places = places::known_places();
+        let start = [PlaceRole::Downloads, PlaceRole::Desktop, PlaceRole::Documents]
+            .into_iter()
+            .chain(std::iter::once(PlaceRole::Home))
+            .find_map(|role| {
+                places
+                    .iter()
+                    .find(|place| place.role == role)
+                    .map(|place| place.path.clone())
+            })
+            .or_else(|| places.first().map(|place| place.path.clone()))
+            // Last resort: a launch with no home folder at all (a stripped
+            // container) still opens somewhere writable instead of nowhere.
+            .or_else(|| std::env::current_dir().ok());
         if let Some(start) = start {
             self.set_location(start);
         }
+    }
+
+    fn start_place(&self, role: PlaceRole) -> Option<PathBuf> {
+        places::known_places()
+            .into_iter()
+            .find(|place| place.role == role)
+            .map(|place| place.path)
     }
 
     pub fn set_location(&self, path: PathBuf) {
@@ -452,9 +474,13 @@ impl AppModel {
     }
 
     pub fn choose_location(&self) {
+        // The dialog opens on the folder already on screen; on a fresh launch
+        // that is the bootstrap folder, so it never falls back to the OS's own
+        // last-used directory.
         let fallback = self
             .location
             .get()
+            .or_else(|| self.start_place(PlaceRole::Home))
             .map(|path| path.to_string_lossy().into_owned());
         let model = self.clone();
         FolderPicker::request(fallback.as_deref(), Box::new(move |chosen| {
@@ -863,9 +889,9 @@ impl AppModel {
             };
             choices.push((label, folder));
         }
-        for (label, path) in browser::known_dirs() {
-            if !choices.iter().any(|(_, existing)| existing == &path) {
-                choices.push((label, path));
+        for place in places::known_places() {
+            if !choices.iter().any(|(_, existing)| existing == &place.path) {
+                choices.push((place.label.to_owned(), place.path));
             }
         }
         choices
@@ -1189,7 +1215,7 @@ fn set_window_title(archive_name: &str) {
 /// `~/Downloads` instead of `/Users/someone/Downloads`: the action bar is
 /// about the location, not the machine's home directory.
 fn abbreviate_home(path: &Path) -> String {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = places::home_dir();
     if let Some(home) = home {
         if let Ok(rest) = path.strip_prefix(&home) {
             if rest.as_os_str().is_empty() {
