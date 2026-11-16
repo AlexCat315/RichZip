@@ -39,7 +39,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式:"; Flags: unchecked
-Name: "associate"; Description: "把常见压缩包关联到 MugenZip"; GroupDescription: "文件关联:"; Flags: checked
+Name: "associate"; Description: "把常见压缩包关联到 MugenZip"; GroupDescription: "文件关联:"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

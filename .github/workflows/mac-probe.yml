@@ -1,0 +1,13 @@
+name: macOS probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: macos-26
+    steps:
+      - name: Report host
+        run: |
+          uname -m
+          sw_vers
