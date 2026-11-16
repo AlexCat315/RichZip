@@ -143,8 +143,8 @@ impl View for RootView {
         };
         let reader_open = Binding::new(reader_get, reader_set);
         let mut reader_options = ModalOptions::new();
-        reader_options.geometry.width = 1280.0;
-        reader_options.geometry.height = 860.0;
+        reader_options.geometry.width = 900.0;
+        reader_options.geometry.height = 760.0;
         let reader = AnyView::new(
             Modal::new(reader_open, pdf_reader_panel(model.clone()))
                 .options(reader_options)
@@ -2474,8 +2474,8 @@ fn create_source_row(model: Rc<AppModel>, index: usize, path: &std::path::Path) 
 /// five pixels it gets when the whole page is squeezed into the 272 pt
 /// inspector.
 fn pdf_reader_panel(model: Rc<AppModel>) -> AnyView {
-    const PAGE: Size = Size::new(1236.0, 1600.0);
-    const READ_VIEWPORT: Size = Size::new(1236.0, 740.0);
+    const PAGE: Size = Size::new(840.0, 1088.0);
+    const READ_VIEWPORT: Size = Size::new(840.0, 600.0);
 
     let card = match model.preview.get() {
         PreviewState::Single(card) => Some(card),
@@ -2505,7 +2505,7 @@ fn pdf_reader_panel(model: Rc<AppModel>) -> AnyView {
                             .truncating_tail()
                             .semantic_font(SemanticFontRef::title())
                             .semantic_foreground(SemanticColorRef::on_surface()),
-                        Text::new("第 1 页 · 2× 放大".to_owned())
+                        Text::new("第 1 页 · 适宽显示".to_owned())
                             .semantic_font(SemanticFontRef::caption())
                             .semantic_foreground(SemanticColorRef::on_surface_muted()),
                     ]),
@@ -2549,13 +2549,25 @@ fn pdf_reader_panel(model: Rc<AppModel>) -> AnyView {
                 .shrink(0.0),
             );
             AnyView::new(
-                ScrollView::vertical(AnyView::new(page))
-                    .frame_width(READ_VIEWPORT.width)
-                    .frame_height(READ_VIEWPORT.height)
-                    .semantic_background(SemanticColorRef::surface_sunken())
-                    .corner_radius(8.0)
-                    .semantic_border(SemanticColorRef::border(), 0.5)
-                    .clipped(),
+                Column::new(
+                    HorizontalAlignment::Leading,
+                    6.0,
+                    AnyView::new(views![
+                        AnyView::new(
+                            ScrollView::vertical(AnyView::new(page))
+                                .frame_width(READ_VIEWPORT.width)
+                                .frame_height(READ_VIEWPORT.height)
+                                .semantic_background(SemanticColorRef::surface_sunken())
+                                .corner_radius(8.0)
+                                .semantic_border(SemanticColorRef::border(), 0.5)
+                                .clipped(),
+                        ),
+                        Text::new("上下滚动查看整页".to_owned())
+                            .semantic_font(SemanticFontRef::caption())
+                            .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                    ]),
+                )
+                .fill_width(),
             )
         }
         None => AnyView::new(
