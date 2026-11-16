@@ -11,13 +11,28 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cove_root="${COVE_ROOT:-$root/../Cove}"
+mode=debug
+profile_args=()
+package_args=()
+if [[ ${1:-} == --release ]]; then
+    mode=release
+    profile_args=(--release)
+    package_args=(--release)
+    shift
+fi
 out="${1:-$root/target/mac-app}"
 stage="$(mktemp -d /tmp/mugenzip-package.XXXXXX)"
 trap 'rm -rf "$stage"' EXIT
 
 cd "$root"
-cargo build
-"$cove_root/target/debug/cove-package" package mac --output "$stage"
+if ((${#profile_args[@]})); then
+    cargo build "${profile_args[@]}"
+    (cd "$cove_root" && cargo build "${profile_args[@]}" -p cove-package)
+else
+    cargo build
+    (cd "$cove_root" && cargo build -p cove-package)
+fi
+"$cove_root/target/$mode/cove-package" package mac "${package_args[@]}" --output "$stage"
 
 rm -rf "$out/MugenZip.app" "$out/MugenZipWidget.app"
 mkdir -p "$out"

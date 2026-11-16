@@ -8,16 +8,17 @@ mod places;
 mod preview;
 mod theme;
 mod views;
+#[cfg(target_os = "macos")]
 mod widget;
 
 /// Declares the application for the current launch mode. `mugenzip --widget`
 /// starts the floating ball; every other invocation starts the browser.
 fn application() -> cove_ui::ApplicationLaunch {
+    #[cfg(target_os = "macos")]
     if std::env::args_os().skip(1).any(|arg| arg == "--widget") {
-        widget::widget_application()
-    } else {
-        app::application()
+        return widget::widget_application();
     }
+    app::application()
 }
 
 pub fn run() -> Result<(), String> {

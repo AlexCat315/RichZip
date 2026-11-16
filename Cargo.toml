@@ -16,7 +16,7 @@ build = 1
 members = [".", "crates/core", "xtask"]
 
 [dependencies]
-cove-ui = { path = "../Cove" }
+cove-ui = { git = "https://github.com/AlexCat315/Cove", tag = "v0.3.1" }
 mugenzip-core = { path = "crates/core" }
 
 [build-dependencies]

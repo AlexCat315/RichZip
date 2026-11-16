@@ -1,0 +1,226 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  package:
+    name: Package ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-14
+            platform: mac
+          - name: windows-x64
+            os: windows-2022
+            platform: windows
+          - name: linux-x64
+            os: ubuntu-24.04
+            platform: linux
+    steps:
+      - name: Checkout RichZip
+        uses: actions/checkout@v4
+        with:
+          path: RichZip
+
+      - name: Checkout Cove
+        uses: actions/checkout@v4
+        with:
+          repository: AlexCat315/Cove
+          ref: v0.3.1
+          path: Cove
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+
+      - name: Read version
+        shell: bash
+        working-directory: RichZip
+        run: |
+          VERSION=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Package macOS DMG
+        if: matrix.platform == 'mac'
+        working-directory: RichZip
+        env:
+          COVE_ROOT: ${{ github.workspace }}/Cove
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64"
+          chmod +x scripts/package-macos.sh
+          bash scripts/package-macos.sh --release
+          mkdir -p target/dmg-root dist
+          cp -R target/mac-app/MugenZip.app target/dmg-root/
+          cp -R target/mac-app/MugenZipWidget.app target/dmg-root/
+          cp README.md LICENSE target/dmg-root/
+          ln -s /Applications target/dmg-root/Applications
+          hdiutil create -volname "MugenZip ${VERSION}" \
+            -srcfolder target/dmg-root \
+            -ov -format UDZO \
+            "dist/MugenZip-${VERSION}-macos-arm64.dmg"
+
+      - name: Setup MSVC
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Expose Windows SDK tools
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $mt = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter mt.exe -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $mt) { throw "mt.exe not found in Windows SDK" }
+          $mt.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build Windows installer
+        if: matrix.platform == 'windows'
+        working-directory: RichZip
+        shell: pwsh
+        run: |
+          cargo build --release
+          cargo build --release --manifest-path ..\Cove\Cargo.toml -p cove-package
+          ..\Cove\target\release\cove-package.exe package windows --release --output target\release-app
+          Copy-Item README.md target\release-app\MugenZip\README.md -Force
+          Copy-Item LICENSE target\release-app\MugenZip\LICENSE -Force
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc "/DAppVersion=$env:VERSION" `
+            "/DSourceDir=$($PWD.Path)\target\release-app\MugenZip" `
+            "/DOutputDir=$($PWD.Path)\dist" `
+            "Platforms\Windows\installer.iss"
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build pkg-config \
+            libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libxfixes-dev libxinerama-dev libxss-dev \
+            libasound2-dev libpulse-dev libwayland-dev libdecor-0-dev \
+            libxkbcommon-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev
+
+      - name: Build Linux packages
+        if: matrix.platform == 'linux'
+        working-directory: RichZip
+        run: |
+          set -euo pipefail
+          cargo build --release
+          cargo build --release --manifest-path ../Cove/Cargo.toml -p cove-package
+          ../Cove/target/release/cove-package package linux --release --output target/release-app
+          cp README.md LICENSE target/release-app/MugenZip/
+          mkdir -p dist target/deb/mugenzip/DEBIAN target/deb/mugenzip/opt/mugenzip
+          mkdir -p target/deb/mugenzip/usr/bin target/deb/mugenzip/usr/share/applications
+          mkdir -p target/deb/mugenzip/usr/share/pixmaps
+          tar -C target/release-app -czf "dist/mugenzip-${VERSION}-linux-x64.tar.gz" MugenZip
+
+          cp -a target/release-app/MugenZip/. target/deb/mugenzip/opt/mugenzip/
+          cp assets/logo_box.png target/deb/mugenzip/usr/share/pixmaps/mugenzip.png
+          cat > target/deb/mugenzip/usr/bin/mugenzip <<'SH'
+          #!/bin/sh
+          exec /opt/mugenzip/mugenzip "$@"
+          SH
+          chmod +x target/deb/mugenzip/usr/bin/mugenzip
+
+          cat > target/deb/mugenzip/usr/share/applications/mugenzip.desktop <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=MugenZip
+          Comment=Archive manager
+          Exec=mugenzip %f
+          Icon=/usr/share/pixmaps/mugenzip.png
+          Terminal=false
+          Categories=Utility;Archiving;
+          MimeType=application/zip;application/x-7z-compressed;application/vnd.rar;application/x-tar;application/gzip;application/x-bzip2;application/x-xz;
+          DESKTOP
+
+          cat > target/deb/mugenzip/DEBIAN/control <<EOF
+          Package: mugenzip
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: AlexCat315 <AlexCat315@users.noreply.github.com>
+          Homepage: https://github.com/AlexCat315/RichZip
+          Description: Cross-platform archive manager
+           Browse, extract and create archives with a native Cove UI.
+          Depends: libc6, libstdc++6, libx11-6, libxext6, libxrandr2, libxi6, libxcursor1, libxfixes3, libxinerama1, libxss1, libasound2t64 | libasound2, libwayland-client0, libdecor-0-0, libxkbcommon0, libdrm2, libgbm1, libdbus-1-3, libudev1
+          EOF
+
+          dpkg-deb --build --root-owner-group target/deb/mugenzip \
+            "dist/mugenzip_${VERSION}_amd64.deb"
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: RichZip/dist/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout RichZip
+        uses: actions/checkout@v4
+        with:
+          path: RichZip
+
+      - name: Read version
+        shell: bash
+        working-directory: RichZip
+        run: |
+          VERSION=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          name: MugenZip ${{ github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            MugenZip ${{ github.ref_name }}
+
+            | 平台 | 文件 |
+            | --- | --- |
+            | macOS Apple Silicon | `MugenZip-${{ env.VERSION }}-macos-arm64.dmg` |
+            | Windows x64 | `MugenZip-${{ env.VERSION }}-windows-x64-setup.exe` |
+            | Linux x64 | `mugenzip_${{ env.VERSION }}_amd64.deb` |
+
+            macOS 构建为 ad-hoc 未签名，首次打开请右键「打开」，或移除 quarantine 属性。
+            Windows 安装包未签名，SmartScreen 可能提示未知发布者。
+            校验和见 `SHA256SUMS.txt`。
