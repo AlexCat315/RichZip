@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use cove_ui::compose::prelude::{TableSort, TextBuffer};
 use cove_ui::compose::primitives::interaction::DroppedFile;
 use cove_ui::composition::DynamicField;
-use cove_ui::core::State;
+use cove_ui::core::{Binding, State};
 use cove_ui::core::scene::{ClipboardHolder, FilePicker, FilePickerFilter, FolderPicker, OpenedDocuments};
 use cove_ui::core::work;
 use cove_ui::hosts::desktop::application::composition::AppDisplayHandleHolder;
@@ -23,6 +23,7 @@ use mugenzip_core::{
 };
 
 use crate::browser::{self, ArchiveBrowser, FileItem};
+use crate::preview::{self, PreviewKind, PreviewOutcome};
 use crate::theme::ThemeMode;
 
 pub const ARCHIVE_EXTENSIONS: [&str; 10] = [
@@ -105,6 +106,94 @@ pub struct Progress {
     pub fraction: f64,
     pub label: String,
     pub current_file: String,
+}
+
+/// What the right-hand inspector is showing, independent of extraction work.
+/// A selection is enough to leave `Hidden`; only a single file can become a
+/// card. Nothing here touches the archive task, so peeking never blocks it.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum PreviewState {
+    #[default]
+    Hidden,
+    Single(PreviewCard),
+    Multi(MultiPreview),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultiPreview {
+    pub items: Vec<PreviewRow>,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreviewRow {
+    pub id: String,
+    pub name: String,
+    pub size: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreviewCard {
+    pub id: String,
+    pub name: String,
+    pub kind: PreviewKind,
+    pub extension: String,
+    pub size: String,
+    pub modified: String,
+    pub bytes: u64,
+    pub content: PreviewContent,
+    /// The extracted file the preview owns. Present as soon as the worker has
+    /// one, even for formats we cannot draw, because double-click hands it to
+    /// the system.
+    pub file: Option<PathBuf>,
+    pub directory: Option<PathBuf>,
+    /// PDF only: show the page at 2× inside the preview viewport instead of
+    /// shrinking a whole A4 page into 272 pt. Reset for every new selection.
+    pub pdf_zoomed: bool,
+}
+
+impl PreviewCard {
+    pub fn label(&self) -> &'static str {
+        match &self.content {
+            PreviewContent::Loading => "读取预览",
+            _ => self.kind.label(),
+        }
+    }
+
+    pub fn cleanup(&self) {
+        if let Some(directory) = &self.directory {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PreviewContent {
+    Loading,
+    Image(PathBuf),
+    Pdf(PathBuf),
+    Text {
+        content: String,
+        truncated: bool,
+    },
+    Note {
+        message: String,
+        error: bool,
+    },
+}
+
+#[derive(Default)]
+struct PreviewSlot {
+    generation: u64,
+    cancel: Option<Arc<AtomicBool>>,
+    receiver: Option<work::UiReceiver>,
+    pending: Option<PreviewCard>,
+}
+
+struct PreviewEvent {
+    generation: u64,
+    result: Result<PreviewOutcome, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -202,6 +291,8 @@ pub struct AppModel {
     /// Package paths ticked in the list, keyed by their string form so the
     /// table's selection binding can own them directly.
     pub package_selection: State<BTreeSet<String>>,
+    /// The right-hand inspector. Owned by selection, never by a toolbar action.
+    pub preview: State<PreviewState>,
     /// The settings sheet is open.
     pub settings_open: State<bool>,
     /// Show the output folder in the file manager once extraction finishes.
@@ -225,6 +316,10 @@ pub struct AppModel {
     pub theme_mode: State<Option<ThemeMode>>,
     task: Rc<RefCell<TaskSlot>>,
     sender: work::UiSender<TaskEvent>,
+    preview_task: Rc<RefCell<PreviewSlot>>,
+    preview_sender: work::UiSender<PreviewEvent>,
+    /// A double-click that arrived before the preview finished extracting.
+    pending_open: Rc<RefCell<Option<String>>>,
     hooks_installed: Cell<bool>,
 }
 
@@ -250,6 +345,7 @@ impl AppModel {
         let packages = State::new(Vec::new());
         let packages_for_events = packages.clone();
         let package_selection = State::new(BTreeSet::new());
+        let preview = State::new(PreviewState::Hidden);
         let settings_open = State::new(false);
         let reveal_after_extract = State::new(true);
         let create_open = State::new(false);
@@ -270,6 +366,8 @@ impl AppModel {
         let reveal_for_events = reveal_after_extract.clone();
         let location_for_events = location.clone();
         let task = Rc::new(RefCell::new(TaskSlot::default()));
+        let preview_task = Rc::new(RefCell::new(PreviewSlot::default()));
+        let pending_open = Rc::new(RefCell::new(None::<String>));
 
         let sender = {
             let archive = archive.clone();
@@ -305,6 +403,37 @@ impl AppModel {
             sender
         };
 
+        let preview_sender = {
+            let preview_for_events = preview.clone();
+            let slot_for_events = preview_task.clone();
+            let pending_for_events = pending_open.clone();
+            let (sender, receiver) = work::ui_channel(move |event: PreviewEvent| {
+                let mut slot = slot_for_events.borrow_mut();
+                if slot.generation != event.generation {
+                    return;
+                }
+                let card = slot.pending.take();
+                slot.cancel = None;
+                drop(slot);
+                let Some(card) = card else {
+                    return;
+                };
+                let state = preview_state_for(card, event.result);
+                preview_for_events.set(state.clone());
+                if let Some(id) = pending_for_events.borrow_mut().take() {
+                    if let PreviewState::Single(card) = &state
+                        && card.id == id
+                        && let Some(file) = &card.file
+                    {
+                        crate::model::open_path(file);
+                    }
+                }
+            });
+            preview_task.borrow_mut().receiver = Some(receiver);
+            sender
+        };
+        preview::sweep();
+
         Self {
             archive,
             history,
@@ -324,6 +453,7 @@ impl AppModel {
             location,
             packages,
             package_selection,
+            preview,
             settings_open,
             reveal_after_extract,
             create_open,
@@ -337,6 +467,9 @@ impl AppModel {
             theme_mode,
             task,
             sender,
+            preview_task,
+            preview_sender,
+            pending_open,
             hooks_installed: Cell::new(false),
         }
     }
@@ -363,6 +496,7 @@ impl AppModel {
             DynamicField::state("location", &self.location),
             DynamicField::state("packages", &self.packages),
             DynamicField::state("packageSelection", &self.package_selection),
+            DynamicField::state("preview", &self.preview),
             DynamicField::state("settingsOpen", &self.settings_open),
             DynamicField::state("revealAfterExtract", &self.reveal_after_extract),
             DynamicField::state("createOpen", &self.create_open),
@@ -513,6 +647,7 @@ impl AppModel {
         }
         self.archive.set(None);
         self.directory.set(String::new());
+        self.clear_preview();
         self.selection.set(BTreeSet::new());
         self.search.set(TextBuffer::empty());
         self.phase.set(Phase::Idle);
@@ -1059,6 +1194,7 @@ impl AppModel {
         let (generation, _cancel) = self.begin_task();
         self.archive.set(None);
         self.directory.set(String::new());
+        self.clear_preview();
         self.selection.set(BTreeSet::new());
         self.search.set(TextBuffer::empty());
         self.destination.set(path.parent().map(|parent| parent.to_path_buf()));
@@ -1232,6 +1368,7 @@ impl AppModel {
         }
         self.tree_selection.set(Some(directory.clone()));
         self.directory.set(directory);
+        self.clear_preview();
         self.selection.set(BTreeSet::new());
     }
 
@@ -1243,14 +1380,215 @@ impl AppModel {
     pub fn activate(&self, item: &FileItem) {
         if item.folder {
             self.enter_directory(item.id.clone());
-        } else {
-            self.selection.set(BTreeSet::from([item.id.clone()]));
+            return;
         }
+        // The click already selected this row; a double-click then means
+        // "open with the system", but only once the peek has a real file.
+        self.change_selection(BTreeSet::from([item.id.clone()]));
+        self.open_selected_with_system(&item.id);
     }
 
     pub fn select_all(&self) {
         let ids: BTreeSet<String> = self.current_items().into_iter().map(|item| item.id).collect();
-        self.selection.set(ids);
+        self.change_selection(ids);
+    }
+
+    /// The table's selection binding. Every tick — a plain click, ⌘-click,
+    /// shift range, or clearing — goes through here, which is why a single
+    /// click is enough to open the inspector.
+    pub fn selection_binding(&self) -> Binding<BTreeSet<String>> {
+        let model = self.clone();
+        Binding::new(
+            {
+                let selection = self.selection.clone();
+                move || selection.get()
+            },
+            move |value| model.change_selection(value),
+        )
+    }
+
+    pub fn change_selection(&self, value: BTreeSet<String>) {
+        if self.selection.get() == value {
+            return;
+        }
+        self.selection.set(value.clone());
+        self.preview_selection(value);
+    }
+
+    /// Toggle the PDF page between whole-page fit and a 2× scrollable view.
+    /// Only applies once the page is actually extracted; the worker's card is
+    /// immutable while loading, so this cannot race with an incoming result.
+    pub fn toggle_pdf_zoom(&self) {
+        let PreviewState::Single(mut card) = self.preview.get() else {
+            return;
+        };
+        if !matches!(card.content, PreviewContent::Pdf(_)) {
+            return;
+        }
+        card.pdf_zoomed = !card.pdf_zoomed;
+        self.preview.set(PreviewState::Single(card));
+    }
+
+    /// The reader sheet's own close path. It does not need the card to still
+    /// be selected, only that a PDF card is open.
+    pub fn close_pdf_reader(&self) {
+        let PreviewState::Single(mut card) = self.preview.get() else {
+            return;
+        };
+        if card.pdf_zoomed {
+            card.pdf_zoomed = false;
+            self.preview.set(PreviewState::Single(card));
+        }
+    }
+
+    /// Select one file from inside the inspector's related list. The table
+    /// follows because both read the same state.
+    pub fn select_preview_id(&self, id: String) {
+        self.change_selection(BTreeSet::from([id]));
+    }
+
+    fn preview_selection(&self, selected: BTreeSet<String>) {
+        if selected.is_empty() {
+            self.clear_preview();
+            return;
+        }
+        let items: Vec<FileItem> = self
+            .current_items()
+            .into_iter()
+            .filter(|item| selected.contains(&item.id))
+            .collect();
+        if items.is_empty() {
+            self.clear_preview();
+            return;
+        }
+        if items.len() > 1 || selected.len() > 1 {
+            self.cancel_preview();
+            let bytes = items.iter().map(|item| item.bytes).sum();
+            self.preview.set(PreviewState::Multi(MultiPreview {
+                items: items
+                    .into_iter()
+                    .map(|item| PreviewRow {
+                        id: item.id,
+                        name: item.name,
+                        size: item.size,
+                        bytes: item.bytes,
+                    })
+                    .collect(),
+                bytes,
+            }));
+            return;
+        }
+        let item = &items[0];
+        if item.folder {
+            self.clear_preview();
+            return;
+        }
+        self.start_preview(item.clone());
+    }
+
+    fn start_preview(&self, item: FileItem) {
+        let Some(archive) = self.archive.get() else {
+            return;
+        };
+        let kind = PreviewKind::for_extension(&item.ext);
+        let mut card = PreviewCard {
+            id: item.id.clone(),
+            name: item.name.clone(),
+            kind,
+            extension: item.ext.clone(),
+            size: item.size.clone(),
+            modified: item.modified.clone(),
+            bytes: item.bytes,
+            content: PreviewContent::Loading,
+            file: None,
+            directory: None,
+            pdf_zoomed: false,
+        };
+
+        // Refuse before extracting, not after: a 3 GB text entry should cost a
+        // line of copy, not a decompression.
+        let limit = if kind == PreviewKind::Text {
+            4 * 1024 * 1024
+        } else {
+            64 * 1024 * 1024
+        };
+        if item.bytes > limit {
+            card.content = PreviewContent::Note {
+                message: format!(
+                    "文件超过 {}，为避免卡顿没有建立预览。双击仍可交给系统打开。",
+                    format_size(limit)
+                ),
+                error: false,
+            };
+            self.cancel_preview();
+            self.preview.set(PreviewState::Single(card));
+            return;
+        }
+
+        self.cancel_preview();
+        let mut slot = self.preview_task.borrow_mut();
+        slot.generation += 1;
+        let generation = slot.generation;
+        let cancel = Arc::new(AtomicBool::new(false));
+        slot.cancel = Some(cancel.clone());
+        slot.pending = Some(card.clone());
+        drop(slot);
+
+        self.preview.set(PreviewState::Single(card));
+        let sender = self.preview_sender.clone();
+        let source = archive.path.clone();
+        let id = item.id.clone();
+        std::thread::spawn(move || {
+            let result = preview::load(&source, &id, kind, generation, &cancel);
+            sender.send(PreviewEvent { generation, result });
+        });
+    }
+
+    fn cancel_preview(&self) {
+        if let PreviewState::Single(card) = self.preview.get() {
+            card.cleanup();
+        }
+        let mut slot = self.preview_task.borrow_mut();
+        slot.generation += 1;
+        if let Some(cancel) = slot.cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        slot.pending = None;
+    }
+
+    pub fn clear_preview(&self) {
+        if let PreviewState::Single(card) = self.preview.get() {
+            card.cleanup();
+        }
+        self.cancel_preview();
+        self.preview.set(PreviewState::Hidden);
+    }
+
+    /// Double-click on a file: use the extracted preview file when it is
+    /// already ready; otherwise remember the intent and let the callback open
+    /// it the moment extraction lands.
+    pub fn open_selected_with_system(&self, id: &str) {
+        if let PreviewState::Single(card) = self.preview.get()
+            && card.id == id
+        {
+            if let Some(file) = &card.file {
+                open_path(file);
+                return;
+            }
+            if matches!(card.content, PreviewContent::Loading) {
+                *self.pending_open.borrow_mut() = Some(id.to_owned());
+                return;
+            }
+            if let PreviewContent::Note { error: true, .. } = &card.content {
+                self.status.set(Status {
+                    text: "无法打开".into(),
+                    detail: "预览提取失败，文件没有被写出来".into(),
+                    tone: Tone::Error,
+                });
+                return;
+            }
+        }
+        *self.pending_open.borrow_mut() = Some(id.to_owned());
     }
 
     pub fn copy_path(&self, id: String) {
@@ -1325,6 +1663,75 @@ struct CreateStates {
     sources: State<Vec<PathBuf>>,
     name: State<TextBuffer>,
     destination: State<Option<PathBuf>>,
+}
+
+/// Turn a worker outcome into the inspector's card. The card itself was
+/// created before the thread started, so its name and row metadata stay exact
+/// even when the result arrives after the table moved on.
+fn preview_state_for(mut card: PreviewCard, result: Result<PreviewOutcome, String>) -> PreviewState {
+    match result {
+        Ok(outcome) => {
+            card.file = outcome.file.clone();
+            card.directory = Some(outcome.directory.clone());
+            card.content = match outcome.kind {
+                PreviewKind::Image => outcome
+                    .file
+                    .map(PreviewContent::Image)
+                    .unwrap_or_else(|| PreviewContent::Note {
+                        message: "预览文件没有生成".into(),
+                        error: true,
+                    }),
+                PreviewKind::Pdf => outcome
+                    .raster
+                    .or(outcome.file)
+                    .map(PreviewContent::Pdf)
+                    .unwrap_or_else(|| PreviewContent::Note {
+                        message: "预览文件没有生成".into(),
+                        error: true,
+                    }),
+                PreviewKind::Text => PreviewContent::Text {
+                    content: outcome.text.unwrap_or_default(),
+                    truncated: outcome.truncated,
+                },
+                PreviewKind::Unsupported => PreviewContent::Note {
+                    message: "这个格式没有内嵌预览。双击会交给系统默认应用。".into(),
+                    error: false,
+                },
+            };
+            PreviewState::Single(card)
+        }
+        Err(message) => {
+            card.content = PreviewContent::Note {
+                message,
+                error: true,
+            };
+            PreviewState::Single(card)
+        }
+    }
+}
+
+/// Hand a file to the host's default application. The preview file lives in
+/// the app's private temp directory, so this never opens the archive itself.
+pub(crate) fn open_path(path: &Path) {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(path);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", ""]).arg(path);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(path);
+        command
+    };
+    let _ = command.spawn();
 }
 
 #[allow(clippy::too_many_arguments)]

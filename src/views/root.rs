@@ -4,6 +4,8 @@
 //! happened"; progress belongs to the package it is unpacking.
 
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use cove_ui::compose::adaptive::SurfaceEnvironment;
@@ -18,6 +20,7 @@ use cove_ui::compose::primitives::layout::{
     ScrollView, SplitAxis, SplitConstraints, SplitView,
 };
 use cove_ui::compose::primitives::media::ui_icon_catalog::{action, file, media, navigation};
+use cove_ui::compose::primitives::media::{Image, ImageContentMode};
 use cove_ui::compose::primitives::overlays::portal::LayerRoot;
 use cove_ui::compose::primitives::overlays::{Modal, ModalOptions};
 use cove_ui::compose::theme::styles::buttons::{
@@ -33,7 +36,8 @@ use cove_ui::core::Color;
 use super::dashed::DashedBorder;
 use crate::browser::FileItem;
 use crate::model::{
-    AppModel, LoadedArchive, PackageItem, Phase, Tone,
+    AppModel, LoadedArchive, MultiPreview, PackageItem, Phase, PreviewCard, PreviewContent,
+    PreviewState, Tone,
 };
 use mugenzip_core::{CompressionLevel, CreateFormat};
 use crate::theme::{self, ThemeMode};
@@ -49,6 +53,12 @@ const HEADER_HEIGHT: f32 = 30.0;
 /// empty state reads in the prototype.
 const DROP_WIDTH: f32 = 420.0;
 const DROP_HEIGHT: f32 = 196.0;
+
+/// The inspector is a fixed lease beside the list: 304 pt, 12 pt air, and
+/// never on top of content. It is the HTML design's measured value, not a
+/// percentage, so resizing the window never makes the card jitter.
+const INSPECTOR_WIDTH: f32 = 304.0;
+const INSPECTOR_GAP: f32 = 12.0;
 
 pub struct RootView {
     pub model: Rc<AppModel>,
@@ -109,10 +119,48 @@ impl View for RootView {
             .debug_name("create-sheet"),
         );
 
+        // A PDF page is 612 × 792 points. At the inspector's 272 pt width its
+        // 12 pt body text lands around five pixels, which is not a preview —
+        // so the inspector keeps the whole-page fit and "放大" hands the page
+        // to a reader that draws it at its own size, scrolling vertically.
+        let reader_model = model.clone();
+        let reader_get = {
+            let model = model.clone();
+            move || {
+                matches!(
+                    model.preview.get(),
+                    PreviewState::Single(card) if card.pdf_zoomed
+                )
+            }
+        };
+        let reader_set = {
+            let model = reader_model.clone();
+            move |open: bool| {
+                if !open {
+                    model.close_pdf_reader();
+                }
+            }
+        };
+        let reader_open = Binding::new(reader_get, reader_set);
+        let mut reader_options = ModalOptions::new();
+        reader_options.geometry.width = 1280.0;
+        reader_options.geometry.height = 860.0;
+        let reader = AnyView::new(
+            Modal::new(reader_open, pdf_reader_panel(model.clone()))
+                .options(reader_options)
+                .debug_name("pdf-reader"),
+        );
+
         // One portal layer, one sheet: stacking two modal nodes makes the
-        // second one paint under the workspace. The two sheets are mutually
+        // second one paint under the workspace. The sheets are mutually
         // exclusive, so pick whichever is open for this frame.
-        let sheet = if model.create_open.get() || !model.settings_open.get() {
+        let reader_visible = matches!(
+            model.preview.get(),
+            PreviewState::Single(card) if card.pdf_zoomed
+        );
+        let sheet = if reader_visible {
+            reader
+        } else if model.create_open.get() || !model.settings_open.get() {
             create
         } else {
             settings
@@ -668,6 +716,39 @@ fn package_view(model: Rc<AppModel>, safe_top: f32) -> AnyView {
         AnyView::new(EmptyView)
     };
 
+    let inspector_visible = !matches!(model.preview.get(), PreviewState::Hidden);
+    let left = AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            0.0,
+            AnyView::new(views![
+                crumb_bar(model.clone()),
+                list_area(model.clone()),
+            ]),
+        )
+        .flex(1.0)
+        .fill_height(),
+    );
+    let inspector = AnyView::new(if inspector_visible {
+        inspector_panel(model.clone())
+    } else {
+        AnyView::new(EmptyView)
+    })
+    .padding_insets(EdgeInsets::new(
+        0.0,
+        0.0,
+        0.0,
+        if inspector_visible { GUTTER } else { 0.0 },
+    ))
+    .frame_width(if inspector_visible { INSPECTOR_WIDTH } else { 0.0 })
+    .fill_height();
+    let body = Row::new(
+        VerticalAlignment::Top,
+        if inspector_visible { INSPECTOR_GAP } else { 0.0 },
+        AnyView::new(views![left, inspector]),
+    )
+    .flex(1.0);
+
     AnyView::new(
         AnyView::new(
             Column::new(
@@ -676,8 +757,7 @@ fn package_view(model: Rc<AppModel>, safe_top: f32) -> AnyView {
                 AnyView::new(views![
                     toolbar_package(model.clone(), safe_top),
                     progress,
-                    crumb_bar(model.clone()),
-                    list_area(model.clone()),
+                    body,
                 ]),
             )
             .flex(1.0)
@@ -1139,6 +1219,633 @@ fn progress_strip(model: Rc<AppModel>) -> AnyView {
     )
 }
 
+// ---------------------------------------------------------------------------
+// inspector: selection in, one card out
+// ---------------------------------------------------------------------------
+
+fn inspector_panel(model: Rc<AppModel>) -> AnyView {
+    match model.preview.get() {
+        PreviewState::Hidden => AnyView::new(EmptyView),
+        PreviewState::Single(card) => inspector_card(model, &card),
+        PreviewState::Multi(multi) => inspector_multi(model, &multi),
+    }
+}
+
+fn inspector_shell(body: AnyView, footer: AnyView, debug: &str) -> AnyView {
+    AnyView::new(
+        AnyView::new(
+            Column::new(
+                HorizontalAlignment::Leading,
+                0.0,
+                AnyView::new(views![body, footer]),
+            )
+            .semantic_background(SemanticColorRef::surface())
+            .semantic_border(SemanticColorRef::border(), 1.0)
+            .corner_radius(10.0)
+            .clipped()
+            .fill_width()
+            .fill_height(),
+        )
+        .debug_name(debug),
+    )
+}
+
+fn preview_header(card: &PreviewCard) -> AnyView {
+    let subtitle = if card.extension.is_empty() {
+        card.size.clone()
+    } else {
+        format!("{} · {}", card.extension.to_uppercase(), card.size)
+    };
+    AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            5.0,
+            AnyView::new(views![
+                Row::new(
+                    VerticalAlignment::Center,
+                    6.0,
+                    AnyView::new(views![
+                        Text::new("•")
+                            .semantic_font(SemanticFontRef::body())
+                            .semantic_foreground(SemanticColorRef::accent()),
+                        Text::new(card.label())
+                            .semantic_font(SemanticFontRef::caption())
+                            .semantic_foreground(SemanticColorRef::accent()),
+                    ]),
+                ),
+                Text::new(card.name.clone())
+                    .line_limit(Some(2))
+                    .truncating_tail()
+                    .semantic_font(SemanticFontRef::body_strong())
+                    .semantic_foreground(SemanticColorRef::on_surface()),
+                Text::new(subtitle)
+                    .line_limit(Some(1))
+                    .truncating_tail()
+                    .semantic_font(SemanticFontRef::caption())
+                    .semantic_foreground(SemanticColorRef::on_surface_muted()),
+            ]),
+        )
+        .padding_insets(EdgeInsets::new(14.0, 16.0, 12.0, 16.0))
+        .fill_width(),
+    )
+}
+
+fn metadata_line(label: &str, value: &str) -> AnyView {
+    AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            0.0,
+            AnyView::new(views![
+                Text::new(label.to_owned())
+                    .semantic_font(SemanticFontRef::caption())
+                    .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                Spacer::new(0.0),
+                Text::new(value.to_owned())
+                    .line_limit(Some(1))
+                    .truncating_tail()
+                    .semantic_font(SemanticFontRef::caption())
+                    .semantic_foreground(SemanticColorRef::on_surface()),
+            ]),
+        )
+        .fill_width(),
+    )
+}
+
+fn preview_footer(card: &PreviewCard) -> AnyView {
+    let mut rows = vec![metadata_line("大小", &card.size)];
+    if !card.modified.trim().is_empty() {
+        rows.push(metadata_line("修改时间", &card.modified));
+    }
+    rows.push(
+        AnyView::new(
+            Row::new(
+                VerticalAlignment::Center,
+                6.0,
+                AnyView::new(views![
+                    AnyView::new(ButtonIcon::new(
+                        ButtonIconSource::resource(action::external_link()),
+                        Some(11.0),
+                        None,
+                    ))
+                    .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                    Text::new("双击这一行，交给系统默认应用")
+                        .semantic_font(SemanticFontRef::caption())
+                        .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                ]),
+            )
+            .padding_insets(EdgeInsets::new(7.0, 0.0, 0.0, 0.0)),
+        ),
+    );
+    AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            4.0,
+            AnyView::new(TupleView::new(rows)),
+        )
+        .padding_insets(EdgeInsets::new(10.0, 16.0, 12.0, 16.0))
+        .fill_width(),
+    )
+}
+
+fn inspector_card(model: Rc<AppModel>, card: &PreviewCard) -> AnyView {
+    let body = AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            0.0,
+            AnyView::new(views![
+                preview_header(card),
+                AnyView::new(Divider::horizontal().thickness(1.0)),
+                AnyView::new(ScrollView::vertical(preview_body(model.clone(), card)))
+                    .flex(1.0)
+                    .fill_width(),
+                AnyView::new(Divider::horizontal().thickness(1.0)),
+                preview_footer(card),
+            ]),
+        )
+        .fill_width()
+        .fill_height(),
+    );
+    inspector_shell(
+        body,
+        AnyView::new(EmptyView),
+        "preview-inspector",
+    )
+}
+
+fn preview_body(model: Rc<AppModel>, card: &PreviewCard) -> AnyView {
+    match &card.content {
+        PreviewContent::Loading => AnyView::new(
+            Column::new(
+                HorizontalAlignment::Center,
+                10.0,
+                AnyView::new(views![
+                    Spinner::new().size(18.0),
+                    Text::new("正在抽取这一条…")
+                        .semantic_font(SemanticFontRef::caption())
+                        .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                ]),
+            )
+            .padding_insets(EdgeInsets::new(34.0, 16.0, 34.0, 16.0))
+            .fill_width(),
+        ),
+        PreviewContent::Image(path) => media_body(model, card, path, false),
+        PreviewContent::Pdf(path) => media_body(model, card, path, true),
+        PreviewContent::Text { content, truncated } => {
+            let items: Vec<AnyView> = vec![
+                AnyView::new(
+                    AnyView::new(text_document(content, &card.extension, *truncated))
+                        .padding_insets(EdgeInsets::new(16.0, 16.0, 0.0, 16.0)),
+                ),
+                AnyView::new(related_section(model.clone(), &card.id)),
+            ];
+            AnyView::new(
+                Column::new(
+                    HorizontalAlignment::Leading,
+                    0.0,
+                    AnyView::new(TupleView::new(items)),
+                )
+                .fill_width(),
+            )
+        }
+        PreviewContent::Note { message, error } => note_body(model, card, message, *error),
+    }
+}
+
+fn media_body(
+    model: Rc<AppModel>,
+    card: &PreviewCard,
+    path: &PathBuf,
+    pdf: bool,
+) -> AnyView {
+    // A 612 × 792 page at 272 pt leaves body text about five pixels tall. The
+    // inspector therefore shows an honest whole-page fit; "放大阅读" opens the
+    // reader sheet, where the page is drawn at its own point size.
+    const VIEWPORT: Size = Size::new(272.0, 312.0);
+    let page = AnyView::new(
+        BoxView::new(
+            FlexDirection::Column,
+            Align::FlexStart,
+            Justify::FlexStart,
+            Wrap::NoWrap,
+            0.0,
+            AnyView::new(
+                AnyView::new(
+                    Image::from_file(path, VIEWPORT).content_mode(if pdf {
+                        ImageContentMode::Fit
+                    } else {
+                        ImageContentMode::Fill
+                    }),
+                )
+                .fill_width()
+                .fill_height(),
+            ),
+        )
+        .frame_size(VIEWPORT.width, VIEWPORT.height)
+        .frame_min_width(VIEWPORT.width)
+        .shrink(0.0),
+    );
+    let framed = AnyView::new(page)
+        .frame_width(VIEWPORT.width)
+        .frame_height(VIEWPORT.height)
+        .corner_radius(8.0)
+        .semantic_border(SemanticColorRef::border(), 0.5)
+        .clipped();
+
+    let caption = if pdf {
+        let toggle = model.clone();
+        AnyView::new(
+            Row::new(
+                VerticalAlignment::Center,
+                8.0,
+                AnyView::new(views![
+                    Text::new("第 1 页 · 整页缩略".to_owned())
+                        .line_limit(Some(1))
+                        .truncating_tail()
+                        .semantic_font(SemanticFontRef::caption())
+                        .semantic_foreground(SemanticColorRef::on_surface_muted())
+                        .frame_min_width(0.0)
+                        .flex(1.0),
+                    Button::new(
+                        Text::new("放大阅读".to_owned())
+                            .semantic_font(SemanticFontRef::caption())
+                            .semantic_foreground(SemanticColorRef::on_surface()),
+                        move || toggle.toggle_pdf_zoom(),
+                    )
+                    .accessibility_text("打开 PDF 阅读面板")
+                    .button_style(GhostButtonStyle)
+                    .control_size(ControlSize::Small),
+                ]),
+            )
+            .fill_width(),
+        )
+    } else {
+        AnyView::new(
+            Text::new("双击交给系统打开原文件".to_owned())
+                .line_limit(Some(1))
+                .truncating_tail()
+                .semantic_font(SemanticFontRef::caption())
+                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+        )
+    };
+
+    let items = vec![
+        AnyView::new(
+            Column::new(
+                HorizontalAlignment::Center,
+                8.0,
+                AnyView::new(views![framed, caption]),
+            )
+            .padding_insets(EdgeInsets::new(12.0, 12.0, 8.0, 12.0))
+            .fill_width(),
+        ),
+        related_section(model, &card.id),
+    ];
+    AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            0.0,
+            AnyView::new(TupleView::new(items)),
+        )
+        .semantic_background(SemanticColorRef::surface_sunken())
+        .fill_width(),
+    )
+}
+
+fn note_body(
+    model: Rc<AppModel>,
+    card: &PreviewCard,
+    message: &str,
+    error: bool,
+) -> AnyView {
+    let tint = if error {
+        SemanticColorRef::error()
+    } else {
+        SemanticColorRef::on_surface_muted()
+    };
+    let glyph = preview_glyph(card);
+    let items = vec![
+        AnyView::new(
+            Column::new(
+                HorizontalAlignment::Leading,
+                10.0,
+                AnyView::new(views![
+                    AnyView::new(ButtonIcon::new(
+                        ButtonIconSource::resource(glyph),
+                        Some(34.0),
+                        None,
+                    ))
+                    .semantic_foreground(tint),
+                    Text::new(card.label().to_owned())
+                        .semantic_font(SemanticFontRef::body_strong())
+                        .semantic_foreground(SemanticColorRef::on_surface()),
+                    Text::new(message.to_owned())
+                        .semantic_font(SemanticFontRef::caption())
+                        .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                ]),
+            )
+            .padding_insets(EdgeInsets::new(24.0, 18.0, 24.0, 18.0))
+            .fill_width(),
+        ),
+        related_section(model, &card.id),
+    ];
+    AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            0.0,
+            AnyView::new(TupleView::new(items)),
+        )
+        .fill_width(),
+    )
+}
+
+fn preview_glyph(card: &PreviewCard) -> cove_ui::imaging::BundleImageResource {
+    if matches!(card.content, PreviewContent::Note { error: true, .. }) {
+        return file::file();
+    }
+    match card.kind {
+        crate::preview::PreviewKind::Image => media::image(),
+        crate::preview::PreviewKind::Pdf => file::file_text(),
+        crate::preview::PreviewKind::Text => file::file_text(),
+        crate::preview::PreviewKind::Unsupported => file::archive(),
+    }
+}
+
+fn text_document(content: &str, extension: &str, truncated: bool) -> AnyView {
+    let mono = matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "json" | "toml" | "yaml" | "yml" | "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "rb"
+            | "go" | "java" | "kt" | "swift" | "c" | "h" | "cpp" | "hpp" | "m" | "mm"
+            | "sh" | "zsh" | "bash" | "fish" | "ps1" | "bat" | "cmd" | "css" | "scss"
+            | "less" | "sql"
+    );
+    let mut items: Vec<AnyView> = Vec::new();
+    // A text preview is read, not audited. Stop at a screenful so a 512 KB
+    // log never builds ten thousand text nodes.
+    for line in content.lines().take(600) {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            items.push(AnyView::new(Spacer::new(6.0)));
+            continue;
+        }
+        if !mono && let Some(heading) = trimmed.strip_prefix("# ") {
+            items.push(AnyView::new(
+                Text::new(strip_inline(heading))
+                    .semantic_font(SemanticFontRef::headline())
+                    .semantic_foreground(SemanticColorRef::on_surface()),
+            ));
+            items.push(AnyView::new(Spacer::new(2.0)));
+            continue;
+        }
+        if !mono && let Some(heading) = trimmed.strip_prefix("## ") {
+            items.push(AnyView::new(
+                Text::new(strip_inline(heading))
+                    .semantic_font(SemanticFontRef::body_strong())
+                    .semantic_foreground(SemanticColorRef::on_surface()),
+            ));
+            continue;
+        }
+        let text = if !mono
+            && (trimmed.starts_with("- ") || trimmed.starts_with("* "))
+        {
+            format!("·  {}", strip_inline(&trimmed[2..]))
+        } else {
+            strip_inline(trimmed)
+        };
+        items.push(AnyView::new(
+            Text::new(text)
+                .semantic_font(if mono {
+                    SemanticFontRef::mono()
+                } else {
+                    SemanticFontRef::body()
+                })
+                .semantic_foreground(SemanticColorRef::on_surface()),
+        ));
+    }
+    if truncated || content.lines().count() > 600 {
+        items.push(AnyView::new(Spacer::new(8.0)));
+        items.push(AnyView::new(
+            Text::new("内容较长，这里只显示开头部分。双击交给系统查看完整文件。")
+                .semantic_font(SemanticFontRef::caption())
+                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+        ));
+    }
+    AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            3.0,
+            AnyView::new(TupleView::new(items)),
+        )
+        .fill_width(),
+    )
+}
+
+fn strip_inline(text: &str) -> String {
+    text.replace("**", "")
+        .replace("`", "")
+        .replace("__", "")
+        .trim()
+        .to_owned()
+}
+
+fn related_section(model: Rc<AppModel>, current_id: &str) -> AnyView {
+    let siblings: Vec<FileItem> = model
+        .current_items()
+        .into_iter()
+        .filter(|item| !item.folder && item.id != current_id)
+        .take(3)
+        .collect();
+    if siblings.is_empty() {
+        return AnyView::new(EmptyView);
+    }
+    let count = model
+        .current_items()
+        .into_iter()
+        .filter(|item| !item.folder && item.id != current_id)
+        .count();
+    let mut rows: Vec<AnyView> = vec![AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            6.0,
+            AnyView::new(views![
+                AnyView::new(EmptyView)
+                    .frame_height(1.0)
+                    .fill_width()
+                    .semantic_background(SemanticColorRef::divider()),
+                Text::new(format!("同目录 · {count} 个其他文件"))
+                    .semantic_font(SemanticFontRef::caption())
+                    .semantic_foreground(SemanticColorRef::on_surface_muted()),
+            ]),
+        )
+        .padding_insets(EdgeInsets::new(12.0, 16.0, 2.0, 16.0))
+        .fill_width(),
+    )];
+    for sibling in siblings {
+        let id = sibling.id.clone();
+        let (glyph, tint) = file_glyph(&sibling.ext, false);
+        let pick = model.clone();
+        rows.push(AnyView::new(
+            Button::new(
+                AnyView::new(
+                    Row::new(
+                        VerticalAlignment::Center,
+                        8.0,
+                        AnyView::new(views![
+                            AnyView::new(ButtonIcon::new(
+                                ButtonIconSource::resource(glyph),
+                                Some(13.0),
+                                None,
+                            ))
+                            .semantic_foreground(tint),
+                            Text::new(sibling.name.clone())
+                                .line_limit(Some(1))
+                                .truncating_tail()
+                                .semantic_font(SemanticFontRef::caption())
+                                .semantic_foreground(SemanticColorRef::on_surface()),
+                            Spacer::new(0.0),
+                            Text::new(sibling.size.clone())
+                                .semantic_font(SemanticFontRef::caption())
+                                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                        ]),
+                    )
+                    .fill_width(),
+                ),
+                move || pick.select_preview_id(id.clone()),
+            )
+            .button_style(PlainButtonStyle)
+            .fill_width()
+            .padding_insets(EdgeInsets::new(5.0, 16.0, 5.0, 16.0)),
+        ));
+    }
+    AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            0.0,
+            AnyView::new(TupleView::new(rows)),
+        )
+        .fill_width(),
+    )
+}
+
+fn inspector_multi(model: Rc<AppModel>, multi: &MultiPreview) -> AnyView {
+    let mut types: BTreeMap<String, usize> = BTreeMap::new();
+    for row in &multi.items {
+        let ext = PathBuf::from(&row.name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_uppercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "其他".to_owned());
+        *types.entry(ext).or_insert(0) += 1;
+    }
+    let mut rows: Vec<AnyView> = vec![];
+    for (ext, count) in types {
+        rows.push(AnyView::new(
+            Row::new(
+                VerticalAlignment::Center,
+                8.0,
+                AnyView::new(views![
+                    AnyView::new(ButtonIcon::new(
+                        ButtonIconSource::resource(file::file()),
+                        Some(13.0),
+                        None,
+                    ))
+                    .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                    Text::new(ext)
+                        .semantic_font(SemanticFontRef::caption())
+                        .semantic_foreground(SemanticColorRef::on_surface()),
+                    Spacer::new(0.0),
+                    Text::new(format!("{count} 个"))
+                        .semantic_font(SemanticFontRef::caption())
+                        .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                ]),
+            )
+            .padding_insets(EdgeInsets::new(5.0, 16.0, 5.0, 16.0))
+            .fill_width(),
+        ));
+    }
+    let body = AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            0.0,
+            AnyView::new(views![
+                AnyView::new(
+                    Column::new(
+                        HorizontalAlignment::Leading,
+                        5.0,
+                        AnyView::new(views![
+                            Row::new(
+                                VerticalAlignment::Center,
+                                6.0,
+                                AnyView::new(views![
+                                    Text::new("•")
+                                        .semantic_font(SemanticFontRef::body())
+                                        .semantic_foreground(SemanticColorRef::accent()),
+                                    Text::new("多选汇总")
+                                        .semantic_font(SemanticFontRef::caption())
+                                        .semantic_foreground(SemanticColorRef::accent()),
+                                ]),
+                            ),
+                            Text::new(format!("已选择 {} 个项目", multi.items.len()))
+                                .semantic_font(SemanticFontRef::body_strong())
+                                .semantic_foreground(SemanticColorRef::on_surface()),
+                            Text::new(format!("共 {}", format_size(multi.bytes)))
+                                .semantic_font(SemanticFontRef::caption())
+                                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                        ]),
+                    )
+                    .padding_insets(EdgeInsets::new(14.0, 16.0, 12.0, 16.0))
+                    .fill_width(),
+                ),
+                AnyView::new(Divider::horizontal().thickness(1.0)),
+                AnyView::new(TupleView::new(rows)),
+                AnyView::new(
+                    Text::new("多选时不抽取单条预览。选择一行即可查看内容，或直接解压这些项目。")
+                        .semantic_font(SemanticFontRef::caption())
+                        .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                )
+                .padding_insets(EdgeInsets::new(12.0, 16.0, 16.0, 16.0)),
+            ]),
+        )
+        .fill_width(),
+    );
+    let clear = model.clone();
+    let footer = AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            0.0,
+            AnyView::new(views![
+                AnyView::new(Divider::horizontal().thickness(1.0)),
+                AnyView::new(
+                    Button::new(
+                        AnyView::new(
+                            Text::new("清除选择")
+                                .semantic_font(SemanticFontRef::caption())
+                                .semantic_foreground(SemanticColorRef::on_surface()),
+                        ),
+                        move || clear.change_selection(BTreeSet::new()),
+                    )
+                    .button_style(PlainButtonStyle),
+                )
+                .padding_insets(EdgeInsets::new(10.0, 16.0, 10.0, 16.0)),
+            ]),
+        )
+        .fill_width(),
+    );
+    inspector_shell(
+        AnyView::new(
+            Column::new(
+                HorizontalAlignment::Leading,
+                0.0,
+                AnyView::new(views![body, footer]),
+            )
+            .fill_width()
+            .fill_height(),
+        ),
+        AnyView::new(EmptyView),
+        "preview-multi",
+    )
+}
+
 fn crumb_bar(model: Rc<AppModel>) -> AnyView {
     let directory = model.directory.get();
     let crumbs = model
@@ -1230,9 +1937,16 @@ fn done_record(model: &AppModel) -> Option<crate::model::ExtractRecord> {
 }
 
 fn list_area(model: Rc<AppModel>) -> AnyView {
+    // When the inspector is open the table's outer gutter moves into the
+    // inspector gap, so the card keeps its 12 pt air instead of 32.
+    let right = if matches!(model.preview.get(), PreviewState::Hidden) {
+        GUTTER
+    } else {
+        0.0
+    };
     AnyView::new(
         Column::new(HorizontalAlignment::Leading, 0.0, AnyView::new(file_table(model)))
-            .padding_insets(EdgeInsets::new(4.0, GUTTER, GUTTER, GUTTER))
+            .padding_insets(EdgeInsets::new(4.0, GUTTER, GUTTER, right))
             .flex(1.0)
             .fill_width(),
     )
@@ -1241,7 +1955,7 @@ fn list_area(model: Rc<AppModel>) -> AnyView {
 fn file_table(model: Rc<AppModel>) -> AnyView {
     let searching = !model.search.get().string_value().trim().is_empty();
     let mut options = TableOptions::default();
-    options.selection = Some(Selection::multiple(model.selection.binding()));
+    options.selection = Some(Selection::multiple(model.selection_binding()));
     options.sort = Some(model.table_sort.binding());
     options.frozen_column_count = 1;
     options.layout = TableLayout {
@@ -1755,6 +2469,112 @@ fn create_source_row(model: Rc<AppModel>, index: usize, path: &std::path::Path) 
 /// A panel, not a second window: a title, grouped rows, and room for the
 /// settings that do not exist yet. Every control here is real; the groups that
 /// are still empty say so instead of offering switches that do nothing.
+/// The page at a size that can actually be read. A 612 × 792 page drawn at
+/// 820 pt is about 1.34×, so 12 pt body copy lands near 16 px instead of the
+/// five pixels it gets when the whole page is squeezed into the 272 pt
+/// inspector.
+fn pdf_reader_panel(model: Rc<AppModel>) -> AnyView {
+    const PAGE: Size = Size::new(1236.0, 1600.0);
+    const READ_VIEWPORT: Size = Size::new(1236.0, 740.0);
+
+    let card = match model.preview.get() {
+        PreviewState::Single(card) => Some(card),
+        _ => None,
+    };
+    let path = card.as_ref().and_then(|card| match &card.content {
+        PreviewContent::Pdf(path) => Some(path.clone()),
+        _ => None,
+    });
+    let name = card
+        .as_ref()
+        .map(|card| card.name.clone())
+        .unwrap_or_else(|| "PDF".to_owned());
+
+    let close = model.clone();
+    let header = AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            8.0,
+            AnyView::new(views![
+                Column::new(
+                    HorizontalAlignment::Leading,
+                    2.0,
+                    AnyView::new(views![
+                        Text::new(name)
+                            .line_limit(Some(1))
+                            .truncating_tail()
+                            .semantic_font(SemanticFontRef::title())
+                            .semantic_foreground(SemanticColorRef::on_surface()),
+                        Text::new("第 1 页 · 2× 放大".to_owned())
+                            .semantic_font(SemanticFontRef::caption())
+                            .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                    ]),
+                )
+                .frame_min_width(0.0)
+                .flex(1.0),
+                Button::new(
+                    Text::new("关闭".to_owned())
+                        .semantic_font(SemanticFontRef::label())
+                        .semantic_foreground(SemanticColorRef::accent()),
+                    move || close.close_pdf_reader(),
+                )
+                .accessibility_text("关闭 PDF 阅读面板")
+                .button_style(PlainButtonStyle)
+                .control_size(ControlSize::Small),
+            ]),
+        )
+        .fill_width(),
+    );
+
+    let body = match path {
+        Some(path) => {
+            let page = AnyView::new(
+                BoxView::new(
+                    FlexDirection::Column,
+                    Align::FlexStart,
+                    Justify::FlexStart,
+                    Wrap::NoWrap,
+                    0.0,
+                    AnyView::new(
+                        AnyView::new(
+                            Image::from_file(&path, PAGE).content_mode(ImageContentMode::Fill),
+                        )
+                        .fill_width()
+                        .fill_height(),
+                    ),
+                )
+                .frame_size(PAGE.width, PAGE.height)
+                .frame_min_width(PAGE.width)
+                .frame(None, None, None, Some(PAGE.height), None, None)
+                .shrink(0.0),
+            );
+            AnyView::new(
+                ScrollView::vertical(AnyView::new(page))
+                    .frame_width(READ_VIEWPORT.width)
+                    .frame_height(READ_VIEWPORT.height)
+                    .semantic_background(SemanticColorRef::surface_sunken())
+                    .corner_radius(8.0)
+                    .semantic_border(SemanticColorRef::border(), 0.5)
+                    .clipped(),
+            )
+        }
+        None => AnyView::new(
+            Text::new("这一项不是 PDF，或预览已结束。".to_owned())
+                .semantic_font(SemanticFontRef::body())
+                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+        ),
+    };
+
+    AnyView::new(
+        Column::new(
+            HorizontalAlignment::Leading,
+            14.0,
+            AnyView::new(views![header, body]),
+        )
+        .padding_insets(EdgeInsets::all(20.0)),
+    )
+}
+
 fn settings_panel(model: Rc<AppModel>) -> AnyView {
     let close = model.clone();
     let header = AnyView::new(

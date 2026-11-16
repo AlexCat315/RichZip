@@ -1,0 +1,1371 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MugenZip · 选中即预览</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='3' width='24' height='26' rx='6' fill='%231F5145'/%3E%3Cpath d='M16 8v10M12 11h8M12 15h8' stroke='%23FBFAF7' stroke-width='1.6'/%3E%3Ccircle cx='16' cy='23' r='2.4' fill='%23FBFAF7'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --paper:#FBFAF7;
+    --surface:#FFFFFE;
+    --surface-2:#F0EEE8;
+    --sunken:#F7F5F0;
+    --ink:#1A1917;
+    --variant:#4E4B44;
+    --muted:#76736A;
+    --border:#E2DFD5;
+    --divider:#E9E6DC;
+    --pine:#1F5145;
+    --pine-strong:#183F36;
+    --ochre:#8A6A3F;
+    --selection:rgba(31,81,69,.16);
+    --hover:rgba(26,25,23,.045);
+    --shadow:0 18px 58px rgba(43,37,27,.14), 0 2px 8px rgba(43,37,27,.06);
+    --ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",sans-serif;
+    --mono:"SF Mono","Menlo","Cascadia Mono","PingFang SC",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;
+    font-family:var(--ui);
+    color:var(--ink);
+    background:#E7E2D8;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:18px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .window{
+    width:min(1480px,100%);
+    height:min(900px,calc(100vh - 36px));
+    min-height:620px;
+    display:grid;
+    grid-template-columns:236px minmax(0,1fr);
+    background:var(--paper);
+    border:1px solid rgba(106,99,82,.28);
+    border-radius:14px;
+    box-shadow:var(--shadow);
+    overflow:hidden;
+  }
+
+  /* ---------------------------------------------------------------------
+     Sidebar: a place index, not a history list.
+     --------------------------------------------------------------------- */
+  .sidebar{
+    position:relative;
+    display:flex;
+    flex-direction:column;
+    background:rgba(240,238,232,.82);
+    border-right:0;
+  }
+  .traffic{
+    height:52px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:0 18px;
+    flex:none;
+  }
+  .light{width:12px;height:12px;border-radius:50%;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.14)}
+  .red{background:#F26B5F}.yellow{background:#E9B44A}.green{background:#54B96B}
+  .side-scroll{
+    flex:1;
+    min-height:0;
+    overflow:auto;
+    padding:10px 8px 12px;
+  }
+  .side-heading{
+    padding:6px 10px 8px;
+    font-size:11.5px;
+    color:var(--muted);
+    letter-spacing:.2px;
+  }
+  .side-row{
+    appearance:none;
+    border:0;
+    background:transparent;
+    width:100%;
+    height:34px;
+    display:flex;
+    align-items:center;
+    gap:9px;
+    padding:0 10px;
+    border-radius:6px;
+    color:var(--variant);
+    font:500 13px/1 var(--ui);
+    text-align:left;
+    cursor:default;
+  }
+  .side-row:hover{background:rgba(26,25,23,.05)}
+  .side-row.active{background:rgba(31,81,69,.14);color:var(--ink)}
+  .side-row svg{width:16px;height:16px;flex:none;color:var(--muted)}
+  .side-row.active svg{color:var(--pine)}
+  .side-row .count{margin-left:auto;font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .side-row.add{margin-top:3px;color:var(--muted)}
+  .side-row.add svg{color:var(--muted)}
+  .settings-row{
+    flex:none;
+    padding:6px 8px 12px;
+  }
+  .settings-row .side-row{height:32px}
+
+  /* ---------------------------------------------------------------------
+     The one card. Everything inside shares the same edge.
+     --------------------------------------------------------------------- */
+  .card{
+    min-width:0;
+    display:flex;
+    flex-direction:column;
+    background:var(--surface);
+    border-radius:0 13px 13px 0;
+  }
+  .toolbar{
+    flex:none;
+    height:60px;
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:0 20px;
+    position:relative;
+  }
+  .icon-btn{
+    appearance:none;
+    border:0;
+    background:transparent;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    width:28px;height:28px;
+    border-radius:6px;
+    color:var(--variant);
+    cursor:default;
+    flex:none;
+  }
+  .icon-btn:hover{background:var(--hover);color:var(--ink)}
+  .icon-btn svg{width:16px;height:16px}
+  .title-block{min-width:0;display:flex;flex-direction:column;gap:2px}
+  .archive-name{
+    font-size:20px;
+    line-height:23px;
+    font-weight:650;
+    letter-spacing:-.35px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .archive-sub{
+    font-size:11.5px;
+    color:var(--muted);
+    font-variant-numeric:tabular-nums;
+    white-space:nowrap;
+  }
+  .spacer{flex:1;min-width:8px}
+  .tools{display:flex;align-items:center;gap:10px;min-width:0}
+  .search{
+    width:142px;
+    height:28px;
+    display:flex;
+    align-items:center;
+    gap:6px;
+    padding:0 9px;
+    background:var(--sunken);
+    border:1px solid var(--border);
+    border-radius:6px;
+    color:var(--muted);
+    flex:none;
+  }
+  .search:focus-within{border-color:rgba(31,81,69,.45);box-shadow:0 0 0 3px rgba(31,81,69,.12)}
+  .search svg{width:14px;height:14px;flex:none}
+  .search input{
+    width:100%;
+    min-width:0;
+    border:0;
+    outline:0;
+    background:transparent;
+    color:var(--ink);
+    font:400 12.5px/1 var(--ui);
+  }
+  .search input::placeholder{color:var(--muted)}
+  .tool-btn{
+    appearance:none;
+    border:0;
+    background:transparent;
+    height:28px;
+    padding:0 5px;
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    border-radius:6px;
+    color:var(--variant);
+    font:500 12.5px/1 var(--ui);
+    cursor:default;
+    white-space:nowrap;
+    flex:none;
+  }
+  .tool-btn:hover{background:var(--hover);color:var(--ink)}
+  .tool-btn svg{width:15px;height:15px}
+  .tool-btn.primary{color:var(--pine)}
+  .tool-btn.primary:hover{background:rgba(31,81,69,.09);color:var(--pine-strong)}
+  .dest{
+    height:28px;
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    padding:0 5px;
+    border:0;
+    background:transparent;
+    border-radius:6px;
+    cursor:default;
+    white-space:nowrap;
+  }
+  .dest:hover{background:var(--hover)}
+  .dest .lead{font-size:11.5px;color:var(--muted)}
+  .dest .value{font-size:12px;color:var(--ink);font-weight:500}
+  .dest svg{width:11px;height:11px;color:var(--muted)}
+  .more-pill{
+    appearance:none;
+    height:28px;
+    padding:0 10px;
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    border:1px solid var(--border);
+    border-radius:6px;
+    background:transparent;
+    color:var(--variant);
+    font:500 12.5px/1 var(--ui);
+    cursor:default;
+    flex:none;
+    white-space:nowrap;
+  }
+  .more-pill:hover{background:var(--sunken);border-color:#D5D1C5}
+  .more-pill svg{width:15px;height:15px}
+
+  /* Popover shared by “更多” and the destination chip. */
+  .popover{
+    position:absolute;
+    top:52px;
+    right:20px;
+    width:210px;
+    padding:5px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    box-shadow:0 10px 28px rgba(43,37,27,.16);
+    z-index:30;
+    display:none;
+  }
+  .popover.open{display:block}
+  .popover button{
+    appearance:none;
+    border:0;
+    background:transparent;
+    width:100%;
+    height:30px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:0 9px;
+    border-radius:6px;
+    color:var(--variant);
+    font:400 12.5px/1 var(--ui);
+    text-align:left;
+    cursor:default;
+  }
+  .popover button:hover{background:var(--sunken);color:var(--ink)}
+  .popover .sep{height:1px;margin:4px 5px;background:var(--divider)}
+  .popover .dest-option::after{
+    content:"";
+    width:6px;height:6px;border-radius:50%;
+    margin-left:auto;
+    border:1px solid var(--border);
+  }
+  .popover .dest-option.current::after{background:var(--pine);border-color:var(--pine)}
+
+  /* ---------------------------------------------------------------------
+     Breadcrumb and list surface.
+     --------------------------------------------------------------------- */
+  .crumb{
+    flex:none;
+    height:34px;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:0 20px;
+    font-size:11.5px;
+    color:var(--muted);
+  }
+  .crumb-path{display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden}
+  .crumb-seg{
+    appearance:none;border:0;background:transparent;padding:2px 3px;border-radius:4px;
+    color:var(--muted);font:400 11.5px/1 var(--ui);cursor:default;white-space:nowrap;
+  }
+  .crumb-seg.can-navigate:hover{background:var(--hover);color:var(--ink)}
+  .crumb-seg.current{color:var(--variant);font-weight:500}
+  .crumb-sep{color:#B9B4A7;font-size:10px}
+  .crumb-meta{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+  .body{
+    flex:1;
+    min-height:0;
+    display:flex;
+    padding:2px 20px 20px;
+  }
+  .list-card{
+    flex:1;
+    min-width:0;
+    display:flex;
+    flex-direction:column;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    overflow:hidden;
+  }
+  .table-head{
+    flex:none;
+    height:30px;
+    display:grid;
+    grid-template-columns:minmax(0,1fr) 78px 112px;
+    align-items:center;
+    padding:0 14px;
+    background:var(--sunken);
+    border-bottom:1px solid var(--divider);
+    font-size:11.5px;
+    color:var(--muted);
+  }
+  .table-head span:first-child{padding-left:26px}
+  .table-head span:nth-child(2),
+  .table-head span:nth-child(3){text-align:right}
+  .rows{
+    flex:1;
+    min-height:0;
+    overflow:auto;
+    background:var(--surface);
+  }
+  .row{
+    appearance:none;
+    border:0;
+    background:transparent;
+    width:100%;
+    height:38px;
+    display:grid;
+    grid-template-columns:minmax(0,1fr) 78px 112px;
+    align-items:center;
+    padding:0 14px;
+    border-bottom:1px solid #F1EFE8;
+    color:var(--ink);
+    text-align:left;
+    font:400 13px/1 var(--ui);
+    cursor:default;
+    position:relative;
+  }
+  .row:hover{background:var(--hover)}
+  .row.selected{background:var(--selection)}
+  .row.selected:hover{background:rgba(31,81,69,.21)}
+  .row:focus-visible{outline:2px solid rgba(31,81,69,.45);outline-offset:-2px}
+  .name-cell{
+    display:flex;
+    align-items:center;
+    gap:9px;
+    min-width:0;
+    padding-left:2px;
+  }
+  .file-icon{
+    width:18px;height:18px;flex:none;
+    display:inline-flex;align-items:center;justify-content:center;
+    color:var(--muted);
+  }
+  .file-icon svg{width:17px;height:17px}
+  .row.selected .file-icon{color:var(--pine)}
+  .folder .name-text{font-weight:560}
+  .name-text{
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .row .size,
+  .row .date{
+    text-align:right;
+    font-size:11.5px;
+    color:var(--muted);
+    font-variant-numeric:tabular-nums;
+    white-space:nowrap;
+  }
+  .empty-folder{
+    padding:36px 20px;
+    color:var(--muted);
+    font-size:12px;
+    text-align:left;
+  }
+  .empty-folder strong{display:block;color:var(--ink);font-size:13px;font-weight:550;margin-bottom:4px}
+
+  /* ---------------------------------------------------------------------
+     Inspector: opens only because a row is selected. No button, no key.
+     --------------------------------------------------------------------- */
+  .inspector{
+    flex:none;
+    width:0;
+    opacity:0;
+    overflow:hidden;
+    border:0 solid transparent;
+    border-radius:10px;
+    background:#FCFBF8;
+    transition:width .22s cubic-bezier(.2,.8,.2,1), opacity .16s ease, margin-left .22s cubic-bezier(.2,.8,.2,1), border-width .08s;
+  }
+  .inspector.open{
+    width:304px;
+    opacity:1;
+    margin-left:12px;
+    border-width:1px;
+    border-color:var(--border);
+  }
+  .inspector-inner{
+    width:304px;
+    height:100%;
+    display:flex;
+    flex-direction:column;
+  }
+  .preview-head{
+    flex:none;
+    padding:14px 16px 12px;
+    border-bottom:1px solid var(--divider);
+    display:flex;
+    flex-direction:column;
+    gap:2px;
+  }
+  .preview-kind{
+    display:flex;align-items:center;gap:5px;
+    font-size:10.5px;
+    color:var(--pine);
+    letter-spacing:.2px;
+  }
+  .preview-kind::before{
+    content:"";width:5px;height:5px;border-radius:50%;background:var(--pine);opacity:.65;
+  }
+  .preview-name{
+    font-size:14px;line-height:19px;font-weight:600;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    letter-spacing:-.1px;
+  }
+  .preview-sub{
+    font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .preview-scroll{
+    flex:1;
+    min-height:0;
+    overflow:auto;
+    padding:14px 16px 16px;
+    background:var(--surface);
+  }
+  .preview-scroll.canvas{
+    background:#F4F1E9;
+    padding:12px;
+  }
+  .media-frame{
+    width:100%;
+    aspect-ratio:4/5;
+    max-height:340px;
+    border-radius:8px;
+    border:1px solid rgba(26,25,23,.10);
+    background-image:url("assets/mountain-lake.jpg");
+    background-size:cover;
+    background-position:center;
+    background-color:#DCE4E4;
+  }
+  .media-caption{
+    display:flex;
+    align-items:baseline;
+    gap:10px;
+    margin-top:9px;
+    color:var(--muted);
+    font-size:10.5px;
+  }
+  .media-caption .cap-title{color:var(--variant);font-weight:500}
+  .media-caption .cap-meta{margin-left:auto;font-variant-numeric:tabular-nums}
+  .related{
+    margin-top:16px;
+    padding-top:11px;
+    border-top:1px solid var(--divider);
+  }
+  .related-head{
+    display:flex;
+    align-items:baseline;
+    gap:6px;
+    margin-bottom:4px;
+    font-size:10.5px;
+    color:var(--muted);
+  }
+  .related-head .related-count{margin-left:auto;font-variant-numeric:tabular-nums}
+  .related-item{
+    appearance:none;
+    border:0;
+    background:transparent;
+    width:100%;
+    height:30px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:0 7px;
+    border-radius:5px;
+    color:var(--variant);
+    font:400 11.5px/1 var(--ui);
+    text-align:left;
+    cursor:default;
+  }
+  .related-item:hover{background:rgba(26,25,23,.055);color:var(--ink)}
+  .related-item .file-icon{width:15px;height:15px;color:var(--muted)}
+  .related-item .r-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .related-item .r-size{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .multi-facts{
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+    margin:12px 0 0;
+    padding-top:10px;
+    border-top:1px solid var(--divider);
+  }
+  .multi-facts .fact-row{
+    display:flex;
+    align-items:baseline;
+    gap:8px;
+    font-size:10.5px;
+    color:var(--muted);
+  }
+  .multi-facts .fact-row b{margin-left:auto;color:var(--variant);font-weight:500;font-variant-numeric:tabular-nums}
+  .text-preview{
+    font-size:12.5px;
+    line-height:1.78;
+    color:var(--variant);
+  }
+  .text-preview h5{
+    margin:0 0 7px;
+    font-size:15px;
+    line-height:1.4;
+    font-weight:650;
+    color:var(--ink);
+    letter-spacing:-.2px;
+  }
+  .text-preview h6{
+    margin:16px 0 5px;
+    font-size:12px;
+    font-weight:650;
+    color:var(--ink);
+  }
+  .text-preview p{margin:0 0 8px}
+  .text-preview ul{margin:4px 0 0;padding-left:16px}
+  .text-preview li{margin:0 0 5px}
+  .text-preview code{
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--pine);
+    background:rgba(31,81,69,.07);
+    padding:1px 4px;
+    border-radius:4px;
+  }
+  .mono-notes{
+    font-family:var(--mono);
+    font-size:11.5px;
+    line-height:1.8;
+    color:var(--variant);
+    white-space:pre-wrap;
+  }
+  .code-block{
+    margin:0;
+    padding:12px;
+    background:var(--sunken);
+    border:1px solid var(--divider);
+    border-radius:8px;
+    font-family:var(--mono);
+    font-size:10.8px;
+    line-height:1.75;
+    color:var(--variant);
+    overflow:auto;
+    white-space:pre;
+  }
+  .code-block .k{color:#2B5B50}
+  .code-block .s{color:var(--ochre)}
+  .code-block .n{color:#8F4D36}
+  .paper-wrap{display:flex;justify-content:center;padding-top:2px}
+  .paper{
+    width:100%;
+    min-height:352px;
+    padding:22px 18px 16px;
+    background:#FFFEFB;
+    border:1px solid #E5E0D4;
+    border-radius:2px;
+    box-shadow:0 1px 2px rgba(43,37,27,.06);
+    font-family:"Songti SC","STSong","Noto Serif SC",serif;
+    color:#26231D;
+    position:relative;
+    overflow:hidden;
+  }
+  .paper-run{
+    font-family:var(--ui);
+    font-size:8px;
+    letter-spacing:1.2px;
+    color:#8A8478;
+    display:flex;
+    justify-content:space-between;
+    border-bottom:1px solid #E8E3D8;
+    padding-bottom:7px;
+  }
+  .paper h4{
+    font-size:19px;
+    line-height:1.4;
+    margin:16px 0 4px;
+    font-weight:600;
+    letter-spacing:.5px;
+  }
+  .paper .paper-sub{
+    font-size:9px;
+    color:#7B7568;
+    letter-spacing:.4px;
+    margin-bottom:12px;
+  }
+  .paper p{
+    font-size:10px;
+    line-height:1.9;
+    margin:0 0 8px;
+    color:#3D382F;
+  }
+  .paper-diagram{
+    margin:12px 0 10px;
+    border:1px solid #DED7C7;
+    background:#FAF7EE;
+    height:96px;
+    position:relative;
+  }
+  .paper-diagram::before{
+    content:"列表";
+    position:absolute;left:8px;top:7px;
+    font-family:var(--ui);font-size:8px;color:#7B7568;
+  }
+  .paper-diagram::after{
+    content:"";
+    position:absolute;right:8px;top:8px;bottom:8px;width:56px;
+    border:1px solid #BEB7A5;
+    background:#FFFEFB;
+  }
+  .paper-lines{position:absolute;left:8px;right:72px;top:26px;bottom:10px;display:flex;flex-direction:column;gap:5px}
+  .paper-lines i{display:block;height:2px;background:#CEC7B6;opacity:.7}
+  .paper-foot{
+    position:absolute;right:18px;bottom:12px;
+    font-family:var(--ui);font-size:8px;color:#9A9384;
+  }
+  .unknown{
+    padding-top:4px;
+    color:var(--variant);
+  }
+  .unknown-icon{
+    width:54px;height:64px;
+    margin-bottom:18px;
+    color:#B7B0A0;
+  }
+  .unknown-icon svg{width:54px;height:64px}
+  .unknown h5{margin:0 0 7px;font-size:14px;font-weight:600;color:var(--ink)}
+  .unknown p{margin:0;font-size:12px;line-height:1.75;color:var(--muted);max-width:230px}
+  .multi-list{display:flex;flex-direction:column;gap:1px;margin:0 0 14px}
+  .multi-item{
+    appearance:none;border:0;background:transparent;
+    display:flex;align-items:center;gap:8px;
+    width:100%;height:34px;padding:0 8px;border-radius:6px;
+    color:var(--ink);font:400 12px/1 var(--ui);text-align:left;cursor:default;
+  }
+  .multi-item:hover{background:var(--hover)}
+  .multi-item .file-icon{width:16px;height:16px;color:var(--muted)}
+  .multi-item .m-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .multi-item .m-size{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .multi-note{
+    font-size:11px;line-height:1.7;color:var(--muted);
+    border-top:1px solid var(--divider);
+    padding-top:11px;
+  }
+  .meta{
+    flex:none;
+    padding:12px 16px 14px;
+    border-top:1px solid var(--divider);
+    display:flex;
+    flex-direction:column;
+    gap:7px;
+  }
+  .meta-row{
+    display:flex;
+    align-items:baseline;
+    gap:10px;
+    font-size:11px;
+    line-height:15px;
+  }
+  .meta-row .label{color:var(--muted);width:56px;flex:none}
+  .meta-row .value{
+    margin-left:auto;
+    text-align:right;
+    color:var(--variant);
+    font-variant-numeric:tabular-nums;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .meta-hint{
+    display:flex;align-items:center;gap:5px;
+    margin-top:2px;
+    color:#8F8A7D;
+    font-size:10.5px;
+  }
+  .meta-hint svg{width:11px;height:11px}
+
+  /* ---------------------------------------------------------------------
+     Toast and compact screen behaviour.
+     --------------------------------------------------------------------- */
+  .toast{
+    position:fixed;
+    left:50%;bottom:42px;
+    transform:translate(-50%,10px);
+    max-width:min(520px,calc(100vw - 48px));
+    padding:9px 14px;
+    border-radius:8px;
+    background:rgba(26,25,23,.92);
+    color:#F7F4EA;
+    font:400 12px/1.4 var(--ui);
+    box-shadow:0 8px 22px rgba(0,0,0,.18);
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .16s ease, transform .16s ease;
+    z-index:60;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+
+  @media (max-width:1180px){
+    .window{grid-template-columns:212px minmax(0,1fr)}
+    .dest{display:none}
+    .inspector.open{width:286px}
+    .inspector-inner{width:286px}
+    .toolbar{padding:0 16px}
+    .crumb,.body{padding-left:16px;padding-right:16px}
+  }
+  @media (max-width:940px){
+    .window{grid-template-columns:1fr}
+    .sidebar{display:none}
+    .card{border-radius:13px}
+    .tools{gap:6px}
+    .search{width:120px}
+    .archive-name{font-size:18px}
+    .body{position:relative}
+    .inspector{
+      position:absolute;
+      right:16px;top:2px;bottom:20px;
+      z-index:20;
+      box-shadow:-12px 0 28px rgba(43,37,27,.08);
+    }
+    .inspector.open{width:min(304px,calc(100vw - 48px));margin-left:0}
+  }
+  @media (max-width:680px){
+    body{padding:0}
+    .window{height:100vh;border-radius:0;border:0}
+    .table-head,.row{grid-template-columns:minmax(0,1fr) 0 84px}
+    .table-head span:nth-child(2),.row .size{display:none}
+    .toolbar{gap:8px}
+    .tool-btn span{display:none}
+    .search{width:104px}
+    .inspector.open{right:10px;left:10px;width:auto;top:2px;bottom:10px}
+    .inspector-inner{width:100%}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .inspector,.toast{transition:none}
+  }
+</style>
+</head>
+<body>
+<div class="window" id="window">
+  <aside class="sidebar">
+    <div class="traffic" aria-hidden="true">
+      <span class="light red"></span><span class="light yellow"></span><span class="light green"></span>
+    </div>
+    <div class="side-scroll">
+      <div class="side-heading">位置</div>
+      <button class="side-row" data-place="桌面">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 20h8M12 17v3"/></svg>
+        <span>桌面</span><span class="count">—</span>
+      </button>
+      <button class="side-row" data-place="文档">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>
+        <span>文档</span><span class="count">—</span>
+      </button>
+      <button class="side-row active" data-place="下载">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 8.5 7 5h7l3 3.5h3v11H4z"/><path d="M12 10v5M9.5 12.5 12 15l2.5-2.5"/></svg>
+        <span>下载</span><span class="count">1</span>
+      </button>
+      <button class="side-row" data-place="个人文件夹">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 10.5 12 4l8 6.5V20H4z"/><path d="M9.5 20v-5h5v5"/></svg>
+        <span>个人文件夹</span><span class="count">—</span>
+      </button>
+      <button class="side-row add" id="addPlace">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 8.5 7 5h7l3 3.5h3v11H4z"/><path d="M12 11v5M9.5 13.5h5"/></svg>
+        <span>添加文件夹…</span>
+      </button>
+    </div>
+    <div class="settings-row">
+      <button class="side-row" id="settingsButton">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19 13.5v-3l-2-.6a6 6 0 0 0-.7-1.6l1-1.8-2.1-2.1-1.8 1a6 6 0 0 0-1.6-.7L11 3h-3l-.6 2a6 6 0 0 0-1.6.7l-1.8-1-2.1 2.1 1 1.8a6 6 0 0 0-.7 1.6L1 11v3l2 .6a6 6 0 0 0 .7 1.6l-1 1.8 2.1 2.1 1.8-1a6 6 0 0 0 1.6.7L9 21h3l.6-2a6 6 0 0 0 1.6-.7l1.8 1 2.1-2.1-1-1.8a6 6 0 0 0 .7-1.6z" transform="scale(.86) translate(2 2)"/></svg>
+        <span>设置</span>
+      </button>
+    </div>
+  </aside>
+
+  <main class="card" id="card">
+    <header class="toolbar">
+      <button class="icon-btn" id="backButton" title="返回位置" aria-label="返回位置">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M15 5 8 12l7 7"/></svg>
+      </button>
+      <div class="title-block">
+        <div class="archive-name" id="archiveName">sample-many-files.zip</div>
+        <div class="archive-sub" id="archiveSub">ZIP · 12 项 · 1.9 MB</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="tools">
+        <label class="search" aria-label="搜索">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 4.5 4.5"/></svg>
+          <input id="searchInput" type="search" placeholder="搜索" autocomplete="off">
+        </label>
+        <button class="tool-btn" id="openButton">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 15.5h8M8 8h8M8 11.5h5"/></svg>
+          <span>打开</span>
+        </button>
+        <button class="dest" id="destButton" title="更改解压位置">
+          <span class="lead">解压到</span><span class="value" id="destValue">sample-many-files</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m7 9 5 5 5-5"/></svg>
+        </button>
+        <button class="tool-btn primary" id="extractButton">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v11M8 10.5 12 14l4-3.5"/><path d="M4 16v4h16v-4"/></svg>
+          <span>解压</span>
+        </button>
+        <button class="more-pill" id="moreButton" aria-haspopup="true" aria-expanded="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          <span>更多</span>
+        </button>
+      </div>
+
+      <div class="popover" id="morePopover">
+        <button data-menu="打开压缩包…">打开压缩包…</button>
+        <button data-menu="在访达中显示">在访达中显示</button>
+        <div class="sep"></div>
+        <button data-menu="复制路径">复制路径</button>
+      </div>
+      <div class="popover" id="destPopover">
+        <button class="dest-option current" data-dest="sample-many-files">sample-many-files</button>
+        <button class="dest-option" data-dest="下载">下载</button>
+        <button class="dest-option" data-dest="桌面">桌面</button>
+      </div>
+    </header>
+
+    <div class="crumb">
+      <div class="crumb-path" id="crumbPath"></div>
+      <div class="crumb-meta" id="crumbMeta">3 个文件夹 · 9 个文件</div>
+    </div>
+
+    <div class="body">
+      <div class="list-card" id="listCard">
+        <div class="table-head"><span>名称</span><span>大小</span><span>修改日期</span></div>
+        <div class="rows" id="rows"></div>
+      </div>
+
+      <aside class="inspector" id="inspector" aria-label="文件预览">
+        <div class="inspector-inner">
+          <div class="preview-head">
+            <div class="preview-kind" id="previewKind">图片预览</div>
+            <div class="preview-name" id="previewName">cover.jpg</div>
+            <div class="preview-sub" id="previewSub">JPEG · 384 × 672</div>
+          </div>
+          <div class="preview-scroll" id="previewScroll"></div>
+          <div class="meta" id="previewMeta"></div>
+        </div>
+      </aside>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function(){
+  const rootFiles = [
+    {id:'root/assets', name:'assets', type:'folder', size:null, modified:'2026-05-09', folder:true},
+    {id:'root/README.md', name:'README.md', type:'md', size:1240, modified:'2026-05-09 14:32'},
+    {id:'root/cover.jpg', name:'cover.jpg', type:'image', size:28880, modified:'2026-05-09 14:32', dims:'384 × 672'},
+    {id:'root/lake-notes.txt', name:'lake-notes.txt', type:'txt', size:512, modified:'2026-05-09 14:28'},
+    {id:'root/design-spec.pdf', name:'design-spec.pdf', type:'pdf', size:1887436, modified:'2026-05-08 19:10', pages:6},
+    {id:'root/archive-index.json', name:'archive-index.json', type:'json', size:2150, modified:'2026-05-09 14:36'},
+    {id:'root/MugenZip-0.2.0.dmg', name:'MugenZip-0.2.0.dmg', type:'dmg', size:13002342, modified:'2026-05-07 11:02'},
+    {id:'root/docs', name:'docs', type:'folder', size:null, modified:'2026-05-08 18:44', folder:true},
+    {id:'root/photos', name:'photos', type:'folder', size:null, modified:'2026-05-09 14:20', folder:true},
+    {id:'root/LICENSE', name:'LICENSE', type:'txt', size:1126, modified:'2026-05-07 10:58'},
+    {id:'root/sample-many-files.zip', name:'sample-many-files.zip', type:'zip', size:2355, modified:'2026-05-09 14:40'},
+    {id:'root/release-notes.md', name:'release-notes.md', type:'md', size:3481, modified:'2026-05-09 12:18'}
+  ];
+
+  const folders = {
+    assets:[
+      {id:'assets/cover.jpg', name:'cover.jpg', type:'image', size:28880, modified:'2026-05-09 14:32', dims:'384 × 672'},
+      {id:'assets/mountain-lake.jpg', name:'mountain-lake.jpg', type:'image', size:28914, modified:'2026-05-09 14:31', dims:'384 × 672'},
+      {id:'assets/icons.pdf', name:'icons.pdf', type:'pdf', size:241664, modified:'2026-05-09 10:06', pages:2}
+    ],
+    docs:[
+      {id:'docs/design-spec.pdf', name:'design-spec.pdf', type:'pdf', size:1887436, modified:'2026-05-08 19:10', pages:6},
+      {id:'docs/README.md', name:'README.md', type:'md', size:1240, modified:'2026-05-09 14:32'}
+    ],
+    photos:[
+      {id:'photos/cover.jpg', name:'cover.jpg', type:'image', size:28880, modified:'2026-05-09 14:32', dims:'384 × 672'},
+      {id:'photos/lake-notes.txt', name:'lake-notes.txt', type:'txt', size:512, modified:'2026-05-09 14:28'}
+    ]
+  };
+
+  const state = {
+    folder:'',
+    selected:new Set(['root/cover.jpg']),
+    anchor:null,
+    query:'',
+    dest:'sample-many-files'
+  };
+
+  const el = {
+    rows:document.getElementById('rows'),
+    inspector:document.getElementById('inspector'),
+    previewKind:document.getElementById('previewKind'),
+    previewName:document.getElementById('previewName'),
+    previewSub:document.getElementById('previewSub'),
+    previewScroll:document.getElementById('previewScroll'),
+    previewMeta:document.getElementById('previewMeta'),
+    crumbPath:document.getElementById('crumbPath'),
+    crumbMeta:document.getElementById('crumbMeta'),
+    search:document.getElementById('searchInput'),
+    more:document.getElementById('moreButton'),
+    morePopover:document.getElementById('morePopover'),
+    dest:document.getElementById('destButton'),
+    destPopover:document.getElementById('destPopover'),
+    destValue:document.getElementById('destValue'),
+    toast:document.getElementById('toast')
+  };
+
+  let toastTimer = null;
+  function showToast(text){
+    el.toast.textContent = text;
+    el.toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(()=>el.toast.classList.remove('show'), 1900);
+  }
+
+  function currentItems(){
+    return state.folder ? (folders[state.folder] || []) : rootFiles;
+  }
+  function filteredItems(){
+    const q = state.query.trim().toLowerCase();
+    if(!q) return currentItems();
+    return currentItems().filter(item=>item.name.toLowerCase().includes(q));
+  }
+  function findItem(id){
+    return currentItems().find(item=>item.id===id)
+      || rootFiles.find(item=>item.id===id)
+      || (folders[state.folder] || []).find(item=>item.id===id);
+  }
+  function formatSize(bytes){
+    if(bytes == null) return '—';
+    if(bytes < 1024) return bytes + ' B';
+    const kb = bytes / 1024;
+    if(kb < 1024) return (kb < 10 ? kb.toFixed(1) : Math.round(kb)) + ' KB';
+    const mb = kb / 1024;
+    return (mb < 10 ? mb.toFixed(1) : Math.round(mb)) + ' MB';
+  }
+  function extLabel(type){
+    return ({md:'MD',txt:'TXT',image:'JPG',pdf:'PDF',json:'{}',dmg:'DMG',zip:'ZIP',folder:'DIR'})[type] || 'FILE';
+  }
+
+  function iconFor(item){
+    if(item.folder){
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55"><path d="M3.5 8.5 6.6 5h6.2l2.7 3.5h4.9v10.5h-17z"/></svg>';
+    }
+    if(item.type==='image'){
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55"><rect x="4" y="3.5" width="16" height="17" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m5.5 17 4.5-4 3 2.7 2.7-2.2L19 17"/></svg>';
+    }
+    if(item.type==='pdf'){
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 12h6M9 15h6M9 18h3"/></svg>';
+    }
+    if(item.type==='json'){
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55"><path d="M9 4c-2 0-2 3-2 4s-2 2-2 4 2 2 2 4 0 4 2 4M15 4c2 0 2 3 2 4s2 2 2 4-2 2-2 4 0 4-2 4"/></svg>';
+    }
+    if(item.type==='dmg'){
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55"><rect x="3.5" y="6" width="17" height="12" rx="2"/><path d="M8 10h8M8 14h4"/><circle cx="17" cy="14" r="1.2"/></svg>';
+    }
+    if(item.type==='zip'){
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M12 5v8M10 8h4M10 11h4"/><circle cx="12" cy="17" r="1.4"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 11h6M9 14h6M9 17h4"/></svg>';
+  }
+
+  function renderTable(){
+    const items = filteredItems();
+    const q = state.query.trim();
+    if(!items.length){
+      el.rows.innerHTML = `<div class="empty-folder"><strong>${q ? '没有匹配的项目' : '这个文件夹是空的'}</strong>${q ? '换一个关键词，或清空搜索。' : '压缩包里的目录结构会出现在这里。'}</div>`;
+    }else{
+      el.rows.innerHTML = items.map(item=>{
+        const selected = state.selected.has(item.id);
+        return `<button class="row ${item.folder?'folder':''} ${selected?'selected':''}" data-id="${item.id}" role="row" aria-selected="${selected}" title="${item.name}">
+          <span class="name-cell"><span class="file-icon">${iconFor(item)}</span><span class="name-text">${item.name}</span></span>
+          <span class="size">${formatSize(item.size)}</span>
+          <span class="date">${item.modified.slice(0,10)}</span>
+        </button>`;
+      }).join('');
+    }
+    const foldersCount = items.filter(i=>i.folder).length;
+    const filesCount = items.length - foldersCount;
+    el.crumbMeta.textContent = q
+      ? `匹配 ${items.length} 项`
+      : `${foldersCount} 个文件夹 · ${filesCount} 个文件`;
+  }
+
+  function renderCrumb(){
+    const segs = [`<button class="crumb-seg ${state.folder?'can-navigate':'current'}" data-crumb="root">全部文件</button>`];
+    if(state.folder){
+      segs.push('<span class="crumb-sep">›</span>');
+      segs.push(`<button class="crumb-seg current" data-crumb="${state.folder}">${state.folder}</button>`);
+    }
+    el.crumbPath.innerHTML = segs.join('');
+  }
+
+  const metaHint = `<div class="meta-hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h4"/></svg>双击用默认应用打开</div>`;
+
+  function relatedBlock(item, limit){
+    const siblings = currentItems().filter(other=>!other.folder && other.id!==item.id);
+    if(!siblings.length) return '';
+    const show = siblings.slice(0, limit || 3);
+    return `<div class="related">
+      <div class="related-head"><span>同目录</span><span class="related-count">${siblings.length} 个文件</span></div>
+      ${show.map(other=>`<button class="related-item" data-related-id="${other.id}">
+        <span class="file-icon">${iconFor(other)}</span>
+        <span class="r-name">${other.name}</span>
+        <span class="r-size">${formatSize(other.size)}</span>
+      </button>`).join('')}
+    </div>`;
+  }
+
+  function renderSingle(item){
+    el.previewKind.textContent = ({
+      image:'图片预览', md:'文档预览', txt:'文本预览', pdf:'PDF 预览',
+      json:'源码预览', dmg:'无内嵌预览', zip:'压缩包预览'
+    })[item.type] || '文件预览';
+    el.previewName.textContent = item.name;
+    el.previewSub.textContent = item.type==='image'
+      ? `JPEG · ${item.dims || '图像'} · ${formatSize(item.size)}`
+      : item.type==='pdf'
+        ? `PDF · ${item.pages || 1} 页 · ${formatSize(item.size)}`
+        : `${extLabel(item.type)} · ${formatSize(item.size)}`;
+
+    let body = '';
+    if(item.type==='image'){
+      body = `<div class="media-frame" role="img" aria-label="湖泊与独木舟的照片预览"></div>
+        <div class="media-caption"><span class="cap-title">湖泊与独木舟</span><span class="cap-meta">4:5 居中裁切</span></div>`;
+    }else if(item.type==='md' && item.name==='README.md'){
+      body = `<div class="text-preview">
+        <h5>MugenZip</h5>
+        <p>把压缩包当作文件夹来读的归档工具。解压、压缩、预览共用一个入口。</p>
+        <h6>预览原则</h6>
+        <ul>
+          <li>选中一行就出现内容，不再需要空格或预览按钮。</li>
+          <li>图片、文本、源码、PDF 直接在右侧读。</li>
+          <li>没有内嵌预览的格式，双击交给系统。</li>
+        </ul>
+        <h6>目录</h6>
+        <p><code>assets/</code> 预览配图、<code>docs/</code> 设计与说明。</p>
+      </div>`;
+    }else if(item.type==='md'){
+      body = `<div class="text-preview">
+        <h5>0.2.0 发布说明</h5>
+        <p>这一版把归档浏览的细节收紧：表格虚拟化、压缩默认值分层、预览不打断列表。</p>
+        <h6>新增</h6>
+        <ul><li>选中即预览，图片与文本优先。</li><li>解压位置跟随当前压缩包。</li></ul>
+        <h6>修复</h6>
+        <p>滚动后的表格 hover 不再落到复用行壳上。</p>
+      </div>`;
+    }else if(item.type==='txt' && item.name==='lake-notes.txt'){
+      body = `<div class="mono-notes">拍摄笔记 / 2026-05-09
+
+湖面在清晨五点最安静。
+船停在左岸，雾气贴着水面走。
+用 35mm 端拍，保留右侧的杉树倒影。
+
+导出：384 × 672，JPEG q86。
+</div>`;
+    }else if(item.type==='txt'){
+      body = `<div class="mono-notes">MIT License
+
+Copyright (c) 2026 MugenZip
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated
+documentation files, to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense.
+</div>`;
+    }else if(item.type==='pdf'){
+      body = `<div class="paper-wrap"><div class="paper">
+        <div class="paper-run"><span>MUGENZIP / 设计说明</span><span>2026.05</span></div>
+        <h4>归档预览</h4>
+        <div class="paper-sub">预览不是第二个窗口</div>
+        <p>单击列表中的任一行，内容在右侧展开。列表保持原位，选中项用一层安静的松绿标出。没有额外的预览按钮，也没有需要记住的快捷键。</p>
+        <div class="paper-diagram"><div class="paper-lines"><i style="width:62%"></i><i style="width:78%"></i><i style="width:48%"></i><i style="width:70%"></i><i style="width:36%"></i></div></div>
+        <p>图片按比例填充预览框；文本维持可读行长；PDF 只渲染当前页。大文件不进入内嵌预览，避免解压等待。</p>
+        <div class="paper-foot">01</div>
+      </div></div>`;
+    }else if(item.type==='json'){
+      body = `<pre class="code-block">{
+  <span class="k">"archive"</span>: <span class="s">"sample-many-files.zip"</span>,
+  <span class="k">"format"</span>: <span class="s">"zip"</span>,
+  <span class="k">"items"</span>: <span class="n">12</span>,
+  <span class="k">"folders"</span>: <span class="n">3</span>,
+  <span class="k">"preview"</span>: {
+    <span class="k">"mode"</span>: <span class="s">"on-selection"</span>,
+    <span class="k">"types"</span>: [<span class="s">"image"</span>, <span class="s">"text"</span>, <span class="s">"pdf"</span>],
+    <span class="k">"maxBytes"</span>: <span class="n">67108864</span>
+  },
+  <span class="k">"selection"</span>: <span class="s">"root/cover.jpg"</span>
+}</pre>`;
+    }else if(item.type==='dmg'){
+      body = `<div class="unknown">
+        <div class="unknown-icon"><svg viewBox="0 0 54 64" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="8" width="46" height="32" rx="5"/><path d="M12 18h30M12 25h14"/><circle cx="42" cy="25" r="3"/><path d="M20 44v10M12 58h30"/></svg></div>
+        <h5>这个格式没有内嵌预览</h5>
+        <p>DMG 安装包不提供图片或文本预览。双击会交给系统默认应用，列表与当前选中项保持不变。</p>
+      </div>`;
+    }else if(item.type==='zip'){
+      body = `<div class="text-preview">
+        <h5>嵌套压缩包</h5>
+        <p>这是压缩包里的另一个压缩包。MugenZip 不在预览区展开它，避免一次读取整棵目录树。</p>
+        <h6>处理方式</h6>
+        <p>双击先解压到临时目录，再作为新的归档打开；原包不受影响。</p>
+      </div>`;
+    }
+
+    body += relatedBlock(item);
+    el.previewScroll.classList.toggle('canvas', item.type==='image' || item.type==='pdf');
+    el.previewScroll.innerHTML = body;
+    el.previewMeta.innerHTML = `
+      <div class="meta-row"><span class="label">大小</span><span class="value">${formatSize(item.size)}</span></div>
+      <div class="meta-row"><span class="label">修改时间</span><span class="value">${item.modified}</span></div>
+      <div class="meta-row"><span class="label">压缩方式</span><span class="value">Deflate · 原始大小保留</span></div>
+      ${metaHint}`;
+  }
+
+  function renderMulti(items){
+    const total = items.reduce((sum,item)=>sum+(item.size||0),0);
+    el.previewKind.textContent = '多选汇总';
+    el.previewName.textContent = `已选 ${items.length} 项`;
+    el.previewSub.textContent = `共 ${formatSize(total)} · 不逐项渲染`;
+    el.previewScroll.innerHTML = `<div class="multi-list">${items.map(item=>`
+      <button class="multi-item" data-multi-id="${item.id}">
+        <span class="file-icon">${iconFor(item)}</span>
+        <span class="m-name">${item.name}</span>
+        <span class="m-size">${formatSize(item.size)}</span>
+      </button>`).join('')}</div>
+      <div class="multi-note">多选时预览区只做汇总。单击上面任一项，就切回那一项的单项预览。</div>
+      <div class="multi-facts">
+        <div class="fact-row"><span>文档类</span><b>${items.filter(i=>['md','txt','pdf'].includes(i.type)).length} 项</b></div>
+        <div class="fact-row"><span>图像类</span><b>${items.filter(i=>i.type==='image').length} 项</b></div>
+        <div class="fact-row"><span>代码/其他</span><b>${items.filter(i=>!['md','txt','pdf','image'].includes(i.type)).length} 项</b></div>
+      </div>
+      ${relatedBlock(items[0], 2)}`;
+    el.previewScroll.classList.remove('canvas');
+    el.previewMeta.innerHTML = `
+      <div class="meta-row"><span class="label">已选</span><span class="value">${items.length} 项</span></div>
+      <div class="meta-row"><span class="label">合计大小</span><span class="value">${formatSize(total)}</span></div>
+      <div class="meta-row"><span class="label">预览策略</span><span class="value">汇总，不逐项解压</span></div>`;
+  }
+
+  function renderPreview(){
+    const items = [...state.selected].map(findItem).filter(Boolean);
+    if(!items.length){
+      el.inspector.classList.remove('open');
+      return;
+    }
+    el.inspector.classList.add('open');
+    if(items.length===1) renderSingle(items[0]);
+    else renderMulti(items);
+  }
+
+  function selectOnly(id){
+    state.selected = new Set([id]);
+    state.anchor = id;
+    renderTable();
+    renderPreview();
+  }
+  function toggleSelection(id){
+    if(state.selected.has(id)) state.selected.delete(id);
+    else state.selected.add(id);
+    state.anchor = id;
+    if(!state.selected.size){
+      state.anchor = null;
+    }
+    renderTable();
+    renderPreview();
+  }
+  function selectRange(id){
+    const items = filteredItems();
+    const a = items.findIndex(i=>i.id===state.anchor);
+    const b = items.findIndex(i=>i.id===id);
+    if(a<0 || b<0){ selectOnly(id); return; }
+    const [start,end] = a<b ? [a,b] : [b,a];
+    state.selected = new Set(items.slice(start,end+1).map(i=>i.id));
+    renderTable();
+    renderPreview();
+  }
+
+  function enterFolder(item){
+    state.folder = item.name;
+    state.selected.clear();
+    state.anchor = null;
+    state.query = '';
+    el.search.value = '';
+    renderCrumb();
+    renderTable();
+    renderPreview();
+  }
+  function goRoot(){
+    state.folder = '';
+    state.selected.clear();
+    state.anchor = null;
+    state.query = '';
+    el.search.value = '';
+    renderCrumb();
+    renderTable();
+    renderPreview();
+  }
+
+  el.rows.addEventListener('click', (event)=>{
+    const row = event.target.closest('.row');
+    if(!row){
+      if(event.target===el.rows){
+        state.selected.clear();
+        state.anchor = null;
+        renderTable();
+        renderPreview();
+      }
+      return;
+    }
+    const item = findItem(row.dataset.id);
+    if(!item) return;
+    if(item.folder){ enterFolder(item); return; }
+    if(event.metaKey || event.ctrlKey) toggleSelection(item.id);
+    else if(event.shiftKey && state.anchor) selectRange(item.id);
+    else selectOnly(item.id);
+  });
+
+  el.rows.addEventListener('dblclick', (event)=>{
+    const row = event.target.closest('.row');
+    if(!row) return;
+    const item = findItem(row.dataset.id);
+    if(!item || item.folder) return;
+    showToast(`已用系统默认应用打开「${item.name}」`);
+  });
+
+  document.getElementById('crumbPath').addEventListener('click', (event)=>{
+    const button = event.target.closest('[data-crumb]');
+    if(!button) return;
+    if(button.dataset.crumb==='root') goRoot();
+    else showToast(`已在 ${button.dataset.crumb}/ 中`);
+  });
+
+  el.search.addEventListener('input', ()=>{
+    state.query = el.search.value;
+    const items = filteredItems();
+    if(state.selected.size && !items.some(i=>state.selected.has(i.id))){
+      state.selected.clear();
+      state.anchor = null;
+    }
+    renderTable();
+    renderPreview();
+  });
+
+  el.previewScroll.addEventListener('click', (event)=>{
+    const multi = event.target.closest('[data-multi-id]');
+    if(multi){ selectOnly(multi.dataset.multiId); return; }
+    const related = event.target.closest('[data-related-id]');
+    if(related){ selectOnly(related.dataset.relatedId); }
+  });
+
+  function closePopovers(){
+    el.morePopover.classList.remove('open');
+    el.destPopover.classList.remove('open');
+    el.more.setAttribute('aria-expanded','false');
+  }
+  el.more.addEventListener('click', (event)=>{
+    event.stopPropagation();
+    const willOpen = !el.morePopover.classList.contains('open');
+    closePopovers();
+    el.morePopover.classList.toggle('open', willOpen);
+    el.more.setAttribute('aria-expanded', String(willOpen));
+  });
+  el.morePopover.addEventListener('click', (event)=>{
+    const item = event.target.closest('[data-menu]');
+    if(!item) return;
+    closePopovers();
+    showToast(`${item.dataset.menu}（示例）`);
+  });
+  el.dest.addEventListener('click', (event)=>{
+    event.stopPropagation();
+    const willOpen = !el.destPopover.classList.contains('open');
+    closePopovers();
+    el.destPopover.classList.toggle('open', willOpen);
+  });
+  el.destPopover.addEventListener('click', (event)=>{
+    const option = event.target.closest('[data-dest]');
+    if(!option) return;
+    state.dest = option.dataset.dest;
+    el.destValue.textContent = state.dest;
+    [...el.destPopover.querySelectorAll('.dest-option')].forEach(btn=>{
+      btn.classList.toggle('current', btn.dataset.dest===state.dest);
+    });
+    closePopovers();
+    showToast(`解压位置已换成「${state.dest}」（示例）`);
+  });
+  document.addEventListener('click', (event)=>{
+    if(!event.target.closest('.popover') && !event.target.closest('#moreButton') && !event.target.closest('#destButton')){
+      closePopovers();
+    }
+  });
+
+  document.getElementById('openButton').addEventListener('click', ()=>showToast('打开压缩包对话框（示例）'));
+  document.getElementById('extractButton').addEventListener('click', ()=>showToast(`已开始解压到「${state.dest}」（示例）`));
+  document.getElementById('backButton').addEventListener('click', ()=>showToast('返回位置视图（示例）'));
+  document.getElementById('settingsButton').addEventListener('click', ()=>showToast('设置面板：外观、语言、压缩默认值'));
+  document.getElementById('addPlace').addEventListener('click', ()=>showToast('添加文件夹对话框（示例）'));
+
+  document.querySelectorAll('.side-row[data-place]').forEach(button=>{
+    button.addEventListener('click', ()=>{
+      document.querySelectorAll('.side-row[data-place]').forEach(b=>b.classList.remove('active'));
+      button.classList.add('active');
+      showToast(`已切换位置：${button.dataset.place}（示例）`);
+    });
+  });
+
+  document.addEventListener('keydown', (event)=>{
+    if(event.key==='Escape'){
+      closePopovers();
+      if(document.activeElement===el.search){
+        el.search.value = '';
+        state.query = '';
+        renderTable();
+        renderPreview();
+      }
+    }
+  });
+
+  renderCrumb();
+  renderTable();
+  renderPreview();
+})();
+</script>
+</body>
+</html>

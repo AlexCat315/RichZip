@@ -5,6 +5,7 @@ mod extract_service;
 mod menu_bar;
 mod model;
 mod places;
+mod preview;
 mod theme;
 mod views;
 mod widget;
