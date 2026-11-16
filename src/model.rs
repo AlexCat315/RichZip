@@ -17,7 +17,9 @@ use cove_ui::hosts::desktop::application::composition::AppDisplayHandleHolder;
 use crate::places::{self, PlaceRole};
 use mugenzip_core as engine;
 use mugenzip_core::{
-    self, ArchiveEntry, ArchiveError, ExtractReport, ExtractionProgress, format_size, open_archive,
+    self, ArchiveEntry, ArchiveError, CompressionLevel, CreateFormat, CreateProgress,
+    CreateReport, CreateRequest, ExtractReport, ExtractionProgress, create_archive,
+    format_size, open_archive,
 };
 
 use crate::browser::{self, ArchiveBrowser, FileItem};
@@ -60,6 +62,9 @@ pub enum Phase {
     Loading,
     Ready,
     Extracting,
+    /// Writing a new archive. Same progress surface as extraction, so the
+    /// window only ever shows one kind of work at a time.
+    Compressing,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -151,6 +156,14 @@ enum TaskEvent {
         failed: Vec<String>,
         records: Vec<ExtractRecord>,
     },
+    CreateProgress {
+        generation: u64,
+        progress: CreateProgress,
+    },
+    Created {
+        generation: u64,
+        result: Result<CreateReport, ArchiveError>,
+    },
 }
 
 #[derive(Clone)]
@@ -193,6 +206,16 @@ pub struct AppModel {
     pub settings_open: State<bool>,
     /// Show the output folder in the file manager once extraction finishes.
     pub reveal_after_extract: State<bool>,
+    /// The new-archive sheet is open.
+    pub create_open: State<bool>,
+    /// What will go into the next archive. Order is the user's.
+    pub create_sources: State<Vec<PathBuf>>,
+    pub create_format: State<CreateFormat>,
+    pub create_level: State<CompressionLevel>,
+    /// Archive name, without the format's extension.
+    pub create_name: State<TextBuffer>,
+    /// Where it lands. `None` means "beside the first source".
+    pub create_destination: State<Option<PathBuf>>,
     /// Light or dark appearance, chosen in the settings sheet. `None` resolves
     /// to the light paper theme until the user picks.
     pub theme_mode: State<Option<ThemeMode>>,
@@ -225,6 +248,18 @@ impl AppModel {
         let package_selection = State::new(BTreeSet::new());
         let settings_open = State::new(false);
         let reveal_after_extract = State::new(true);
+        let create_open = State::new(false);
+        let create_sources = State::new(Vec::new());
+        let create_format = State::new(CreateFormat::Zip);
+        let create_level = State::new(CompressionLevel::Balanced);
+        let create_name = State::new(TextBuffer::empty());
+        let create_destination = State::new(None::<PathBuf>);
+        let create_for_events = CreateStates {
+            open: create_open.clone(),
+            sources: create_sources.clone(),
+            name: create_name.clone(),
+            destination: create_destination.clone(),
+        };
         let theme_mode = State::new(Some(ThemeMode::System));
         let reveal_for_events = reveal_after_extract.clone();
         let location_for_events = location.clone();
@@ -257,6 +292,7 @@ impl AppModel {
                     &location_for_events,
                     &packages_for_events,
                     &reveal_for_events,
+                    &create_for_events,
                 );
             });
             task.borrow_mut().receiver = Some(receiver);
@@ -284,6 +320,12 @@ impl AppModel {
             package_selection,
             settings_open,
             reveal_after_extract,
+            create_open,
+            create_sources,
+            create_format,
+            create_level,
+            create_name,
+            create_destination,
             theme_mode,
             task,
             sender,
@@ -315,6 +357,12 @@ impl AppModel {
             DynamicField::state("packageSelection", &self.package_selection),
             DynamicField::state("settingsOpen", &self.settings_open),
             DynamicField::state("revealAfterExtract", &self.reveal_after_extract),
+            DynamicField::state("createOpen", &self.create_open),
+            DynamicField::state("createSources", &self.create_sources),
+            DynamicField::state("createFormat", &self.create_format),
+            DynamicField::state("createLevel", &self.create_level),
+            DynamicField::state("createName", &self.create_name),
+            DynamicField::state("createDestination", &self.create_destination),
             DynamicField::state("themeMode", &self.theme_mode),
         ]
     }
@@ -666,6 +714,13 @@ impl AppModel {
 
     /// Takes the first archive among the dropped files, ignoring the rest.
     pub fn open_dropped(&self, files: Vec<DroppedFile>) {
+        if files.is_empty() || self.is_busy() {
+            return;
+        }
+        if self.create_open.get() {
+            self.add_create_sources(files.into_iter().map(|file| PathBuf::from(file.path)).collect());
+            return;
+        }
         if let Some(file) = files.into_iter().find(|file| !file.is_directory) {
             self.open(PathBuf::from(file.path.clone()));
         }
@@ -753,6 +808,226 @@ impl AppModel {
         let cancel = Arc::new(AtomicBool::new(false));
         task.cancel = Some(cancel.clone());
         (task.generation, cancel)
+    }
+
+    // -- creating a new archive ---------------------------------------------
+
+    /// Opens the sheet. Sources stay empty until the user adds something:
+    /// guessing what to pack is how you end up compressing the wrong folder.
+    pub fn open_create(&self) {
+        if self.is_busy() {
+            return;
+        }
+        self.create_open.set(true);
+        if self.create_name.get().is_empty() {
+            self.create_name.set(TextBuffer::new(&self.suggested_create_name()));
+        }
+        if self.create_destination.get().is_none() {
+            self.create_destination.set(self.default_create_destination());
+        }
+    }
+
+    pub fn close_create(&self) {
+        if self.is_busy() {
+            return;
+        }
+        self.create_open.set(false);
+    }
+
+    /// The name the field starts with: the single source's stem, or "归档"
+    /// when the archive holds several things.
+    pub fn suggested_create_name(&self) -> String {
+        let sources = self.create_sources.get();
+        match sources.as_slice() {
+            [one] => {
+                let path = if one.is_dir() {
+                    one.file_name()
+                } else {
+                    one.file_stem()
+                };
+                path.map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "归档".into())
+            }
+            _ => "归档".into(),
+        }
+    }
+
+    pub fn default_create_destination(&self) -> Option<PathBuf> {
+        self.create_sources
+            .get()
+            .first()
+            .and_then(|source| source.parent().map(Path::to_path_buf))
+            .or_else(|| self.location.get())
+            .or_else(places::home_dir)
+    }
+
+    pub fn create_destination_resolved(&self) -> Option<PathBuf> {
+        self.create_destination
+            .get()
+            .or_else(|| self.default_create_destination())
+    }
+
+    pub fn create_destination_name(&self) -> String {
+        self.create_destination_resolved()
+            .map(|path| abbreviate_home(&path))
+            .unwrap_or_else(|| "未选择".into())
+    }
+
+    pub fn choose_create_destination(&self) {
+        if self.is_busy() {
+            return;
+        }
+        let fallback = self
+            .create_destination_resolved()
+            .map(|path| path.to_string_lossy().into_owned());
+        let model = self.clone();
+        FolderPicker::request(fallback.as_deref(), Box::new(move |chosen| {
+            if let Some(directory) = chosen {
+                model.create_destination.set(Some(PathBuf::from(directory)));
+            }
+        }));
+    }
+
+    pub fn set_create_format(&self, format: CreateFormat) {
+        self.create_format.set(format);
+    }
+
+    pub fn set_create_level(&self, level: CompressionLevel) {
+        self.create_level.set(level);
+    }
+
+    /// Adds files from the platform panel. Multiple selection is the point:
+    /// packing one file at a time is what the Finder verb is for.
+    pub fn add_create_files(&self) {
+        let model = self.clone();
+        FilePicker::request(&[], true, Box::new(move |paths| {
+            model.add_create_sources(paths.into_iter().map(PathBuf::from).collect());
+        }));
+    }
+
+    /// Folders come one at a time because the platform folder panel returns
+    /// one; pressing the button again adds the next.
+    pub fn add_create_folder(&self) {
+        let fallback = self
+            .location
+            .get()
+            .map(|path| path.to_string_lossy().into_owned());
+        let model = self.clone();
+        FolderPicker::request(fallback.as_deref(), Box::new(move |chosen| {
+            if let Some(directory) = chosen {
+                model.add_create_sources(vec![PathBuf::from(directory)]);
+            }
+        }));
+    }
+
+    pub fn add_create_sources(&self, paths: Vec<PathBuf>) {
+        if paths.is_empty() || self.is_busy() {
+            return;
+        }
+        // A name that followed the previous source list is stale once the
+        // list changes; a name the user typed is not.
+        let previous_name = self.create_name.get().string_value();
+        let previous_suggestion = self.suggested_create_name();
+        let previous_destination = self.create_destination.get();
+        let previous_default = self.default_create_destination();
+        let mut sources = self.create_sources.get();
+        for path in paths {
+            if !sources.contains(&path) {
+                sources.push(path);
+            }
+        }
+        self.create_sources.set(sources);
+        // The destination follows the sources only while it is still the
+        // automatic one; a folder the user picked is never overwritten.
+        if previous_destination.is_none() || previous_destination == previous_default {
+            self.create_destination.set(self.default_create_destination());
+        }
+        if previous_name.is_empty() || previous_name == previous_suggestion {
+            self.create_name.set(TextBuffer::new(&self.suggested_create_name()));
+        }
+        self.create_open.set(true);
+    }
+
+    pub fn remove_create_source(&self, index: usize) {
+        let mut sources = self.create_sources.get();
+        if index < sources.len() {
+            sources.remove(index);
+        }
+        let now_empty = sources.is_empty();
+        self.create_sources.set(sources);
+        if now_empty {
+            self.create_name.set(TextBuffer::empty());
+        }
+    }
+
+    pub fn create_source_count(&self) -> usize {
+        self.create_sources.get().len()
+    }
+
+    /// Starts the write. Everything is checked here, so the button can stay
+    /// quiet instead of being disabled for reasons the user cannot see.
+    pub fn create_now(&self) {
+        if self.is_busy() {
+            return;
+        }
+        let sources = self.create_sources.get();
+        if sources.is_empty() {
+            self.status.set(Status {
+                text: "还没有选择内容".into(),
+                detail: "先添加文件或文件夹".into(),
+                tone: Tone::Error,
+            });
+            return;
+        }
+        let name = self.create_name.get().string_value().trim().to_owned();
+        let name = if name.is_empty() {
+            self.suggested_create_name()
+        } else {
+            name
+        };
+        let Some(destination) = self.create_destination_resolved() else {
+            self.choose_create_destination();
+            return;
+        };
+        let format = self.create_format.get();
+        let level = self.create_level.get();
+        let (generation, cancel) = self.begin_task();
+        self.phase.set(Phase::Compressing);
+        self.progress.set(Progress {
+            fraction: 0.0,
+            label: "正在准备…".into(),
+            current_file: "正在读取来源…".into(),
+        });
+        self.status.set(Status {
+            text: "正在压缩".into(),
+            detail: format!("{} · {}", name, format.label()),
+            tone: Tone::Busy,
+        });
+
+        let request = CreateRequest {
+            sources,
+            destination_dir: destination,
+            name,
+            format,
+            level,
+        };
+        let sender = self.sender.clone();
+        std::thread::spawn(move || {
+            let mut throttle = Throttle::new();
+            let result = create_archive(
+                &request,
+                &mut |progress| {
+                    if throttle.should_send_create(&progress) {
+                        sender.send(TaskEvent::CreateProgress {
+                            generation,
+                            progress: progress.clone(),
+                        });
+                    }
+                },
+                &cancel,
+            );
+            sender.send(TaskEvent::Created { generation, result });
+        });
     }
 
     pub fn open(&self, path: PathBuf) {
@@ -864,9 +1139,14 @@ impl AppModel {
         if let Some(cancel) = &self.task.borrow().cancel {
             cancel.store(true, Ordering::Relaxed);
         }
+        let compressing = self.phase.get() == Phase::Compressing;
         self.status.set(Status {
             text: "正在取消".into(),
-            detail: "正在停止解码并清理本次临时文件…".into(),
+            detail: if compressing {
+                "正在停止编码并清理临时文件…".into()
+            } else {
+                "正在停止解码并清理本次临时文件…".into()
+            },
             tone: Tone::Busy,
         });
     }
@@ -1001,6 +1281,28 @@ impl Throttle {
             false
         }
     }
+
+    fn should_send_create(&mut self, progress: &CreateProgress) -> bool {
+        let changed = progress.current != self.last_file;
+        let elapsed = self.last_sent.elapsed() >= Duration::from_millis(50);
+        let done = progress.processed == progress.total;
+        if changed || elapsed || done {
+            self.last_sent = Instant::now();
+            self.last_file = progress.current.clone();
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The new-archive states the event pump needs. Grouped because the pump
+/// already takes a dozen states and the list only grows.
+struct CreateStates {
+    open: State<bool>,
+    sources: State<Vec<PathBuf>>,
+    name: State<TextBuffer>,
+    destination: State<Option<PathBuf>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1019,12 +1321,15 @@ fn apply_event(
     location: &State<Option<PathBuf>>,
     packages: &State<Vec<PackageItem>>,
     reveal_after_extract: &State<bool>,
+    create: &CreateStates,
 ) {
     let generation = match &event {
         TaskEvent::Loaded { generation, .. }
         | TaskEvent::Progress { generation, .. }
         | TaskEvent::Extracted { generation, .. }
-        | TaskEvent::BatchFinished { generation, .. } => *generation,
+        | TaskEvent::BatchFinished { generation, .. }
+        | TaskEvent::CreateProgress { generation, .. }
+        | TaskEvent::Created { generation, .. } => *generation,
     };
     if task.borrow().generation != generation {
         return;
@@ -1194,6 +1499,73 @@ fn apply_event(
             });
             refresh(history);
             let _ = cancelled;
+        }
+        TaskEvent::CreateProgress { progress: update, .. } => {
+            let fraction = if update.total == 0 {
+                0.0
+            } else {
+                (update.processed as f64 / update.total as f64).clamp(0.0, 1.0)
+            };
+            progress.set(Progress {
+                fraction,
+                label: format!(
+                    "{} / {} · {:.0}%",
+                    format_size(update.processed),
+                    format_size(update.total),
+                    fraction * 100.0
+                ),
+                current_file: if update.current.is_empty() {
+                    "正在准备…".into()
+                } else {
+                    update.current
+                },
+            });
+        }
+        TaskEvent::Created { result, .. } => {
+            task.borrow_mut().cancel = None;
+            phase.set(Phase::Idle);
+            match result {
+                Ok(report) => {
+                    create.open.set(false);
+                    create.sources.set(Vec::new());
+                    create.name.set(TextBuffer::empty());
+                    create.destination.set(None);
+                    progress.set(Progress {
+                        fraction: 1.0,
+                        label: "100%".into(),
+                        current_file: String::new(),
+                    });
+                    let name = report
+                        .path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    status.set(Status {
+                        text: "已创建压缩包".into(),
+                        detail: format!(
+                            "{} · {} 项 · {}",
+                            name,
+                            report.entries,
+                            format_size(report.bytes)
+                        ),
+                        tone: Tone::Ok,
+                    });
+                    if let Some(directory) = report.path.parent() {
+                        location.set(Some(directory.to_path_buf()));
+                        refresh(history);
+                    }
+                    if reveal_after_extract.get() {
+                        reveal_in_file_manager(&report.path);
+                    }
+                }
+                Err(error) => {
+                    status.set(Status {
+                        text: "无法创建压缩包".into(),
+                        detail: error.to_string(),
+                        tone: Tone::Error,
+                    });
+                }
+            }
         }
     }
     // The OS close was vetoed until the workspace was clean; now it is.

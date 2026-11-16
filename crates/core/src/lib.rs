@@ -1,3 +1,4 @@
+mod create;
 mod rar;
 mod safety;
 mod sevenz;
@@ -10,6 +11,10 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub use create::{
+    CompressionLevel, CreateFormat, CreateProgress, CreateReport, CreateRequest, create_archive,
+    unique_archive_path,
+};
 pub use safety::{ExtractionPlan, archive_base_name, unique_output_dir};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

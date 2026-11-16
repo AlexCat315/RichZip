@@ -11,6 +11,7 @@ use cove_ui::compose::modifiers::layout::EdgeInsets;
 use cove_ui::compose::modifiers::style::AppearanceExt;
 use cove_ui::compose::prelude::*;
 use cove_ui::compose::primitives::controls::{RadioGroup, RadioOption, Toggle};
+use cove_ui::compose::primitives::text::text_field::TextField;
 use cove_ui::compose::primitives::data::table::{ColumnVisibility, ComparisonResult};
 use cove_ui::compose::primitives::feedback::ProgressView;
 use cove_ui::compose::primitives::layout::{
@@ -32,8 +33,9 @@ use cove_ui::core::Color;
 use super::dashed::DashedBorder;
 use crate::browser::FileItem;
 use crate::model::{
-    AppModel, LoadedArchive, PackageItem, Phase, Tone, ARCHIVE_EXTENSIONS,
+    AppModel, LoadedArchive, PackageItem, Phase, Tone,
 };
+use mugenzip_core::{CompressionLevel, CreateFormat};
 use crate::theme::{self, ThemeMode};
 use mugenzip_core::format_size;
 
@@ -74,8 +76,7 @@ impl View for RootView {
                 move |files| drop.open_dropped(files),
                 workspace(shell, safe_top),
             )
-            .accepted_extensions(ARCHIVE_EXTENSIONS)
-            .maximum_files(1)
+            .maximum_files(20)
             .shows_chrome(false)
             .is_targeted(model.drop_targeted.binding())
             .on_targeted(move |is_targeted| targeted.drop_targeted.set(is_targeted))
@@ -92,9 +93,30 @@ impl View for RootView {
                 model.settings_open.binding(),
                 settings_panel(model.clone()),
             )
-            .options(options)
+            .options(options.clone())
             .debug_name("settings-sheet"),
         );
+
+        let mut create_options = ModalOptions::new();
+        create_options.geometry.width = 520.0;
+        create_options.geometry.height = 600.0;
+        let create = AnyView::new(
+            Modal::new(
+                model.create_open.binding(),
+                create_panel(model.clone()),
+            )
+            .options(create_options)
+            .debug_name("create-sheet"),
+        );
+
+        // One portal layer, one sheet: stacking two modal nodes makes the
+        // second one paint under the workspace. The two sheets are mutually
+        // exclusive, so pick whichever is open for this frame.
+        let sheet = if model.create_open.get() || !model.settings_open.get() {
+            create
+        } else {
+            settings
+        };
 
         // `LayerRoot` mounts the portal host, which is what makes sheets and
         // menus draw above the window instead of inside the layout.
@@ -106,7 +128,7 @@ impl View for RootView {
                     Justify::FlexStart,
                     Wrap::NoWrap,
                     0.0,
-                    AnyView::new(TupleView::new(vec![workspace_view, settings])),
+                    AnyView::new(TupleView::new(vec![workspace_view, sheet])),
                 )
                 .fill(),
             )))
@@ -639,7 +661,7 @@ impl PackageMenu {
 // ---------------------------------------------------------------------------
 
 fn package_view(model: Rc<AppModel>, safe_top: f32) -> AnyView {
-    let busy = model.phase.get() == Phase::Extracting;
+    let busy = matches!(model.phase.get(), Phase::Extracting | Phase::Compressing);
     let progress: AnyView = if busy {
         progress_strip(model.clone())
     } else {
@@ -767,6 +789,14 @@ fn toolbar_browse(model: Rc<AppModel>, safe_top: f32, searching: bool) -> AnyVie
 
     let open = model.clone();
     let open_action = toolbar_action(file::archive(), "打开", true, false, move || open.open_dialog());
+    let compress = model.clone();
+    let compress_action = toolbar_action(
+        action::plus(),
+        "压缩",
+        !model.is_busy(),
+        false,
+        move || compress.open_create(),
+    );
 
     let tools = AnyView::new(
         Row::new(
@@ -775,6 +805,7 @@ fn toolbar_browse(model: Rc<AppModel>, safe_top: f32, searching: bool) -> AnyVie
             AnyView::new(views![
                 search_field(model.clone()),
                 open_action,
+                compress_action,
                 more_pill(model.clone()),
             ]),
         )
@@ -999,9 +1030,13 @@ fn more_pill(model: Rc<AppModel>) -> AnyView {
 fn menu_entries(model: Rc<AppModel>) -> Vec<MenuEntry> {
     let open = model.clone();
     let loaded = model.archive.get().is_some();
-    let mut entries = vec![MenuEntry::Item(
-        MenuItem::new(4, "打开压缩包…", move || open.open_dialog()).shortcut("⌘O"),
-    )];
+    let create = model.clone();
+    let mut entries = vec![
+        MenuEntry::Item(
+            MenuItem::new(4, "打开压缩包…", move || open.open_dialog()).shortcut("⌘O"),
+        ),
+        MenuEntry::Item(MenuItem::new(12, "新建压缩包…", move || create.open_create())),
+    ];
     if !loaded {
         let refresh = model.clone();
         entries.push(MenuEntry::separator(8));
@@ -1048,6 +1083,7 @@ fn menu_entries(model: Rc<AppModel>) -> Vec<MenuEntry> {
 fn progress_strip(model: Rc<AppModel>) -> AnyView {
     let progress = model.progress.get();
     let cancel = model.clone();
+    let compressing = model.phase.get() == Phase::Compressing;
     let current = if progress.current_file.trim().is_empty() {
         progress.label.clone()
     } else {
@@ -1064,7 +1100,7 @@ fn progress_strip(model: Rc<AppModel>) -> AnyView {
                     VerticalAlignment::Center,
                     10.0,
                     AnyView::new(views!(
-                        Text::new("解压中")
+                        Text::new(if compressing { "压缩中" } else { "解压中" })
                             .semantic_font(SemanticFontRef::caption())
                             .semantic_foreground(SemanticColorRef::on_surface()),
                         Text::new(progress.label.clone())
@@ -1086,7 +1122,7 @@ fn progress_strip(model: Rc<AppModel>) -> AnyView {
                                 .semantic_foreground(SemanticColorRef::on_surface()),
                             move || cancel.cancel_extract(),
                         )
-                        .accessibility_text("取消解压")
+                        .accessibility_text("取消当前任务")
                         .button_style(GhostButtonStyle)
                         .control_size(ControlSize::Small),
                     )),
@@ -1179,7 +1215,7 @@ fn crumb_bar(model: Rc<AppModel>) -> AnyView {
 /// The record to advertise as "该包已解压" — only while nothing is running and
 /// the last run actually succeeded.
 fn done_record(model: &AppModel) -> Option<crate::model::ExtractRecord> {
-    if model.phase.get() == Phase::Extracting {
+    if matches!(model.phase.get(), Phase::Extracting | Phase::Compressing) {
         return None;
     }
     let archive = model.archive.get()?;
@@ -1328,6 +1364,388 @@ fn row_menu(model: Rc<AppModel>, id: String) -> Vec<MenuEntry> {
         MenuEntry::separator(2),
         MenuEntry::Item(MenuItem::new(3, "复制路径", move || copy.copy_path(id.clone()))),
     ]
+}
+
+// ---------------------------------------------------------------------------
+// create sheet
+// ---------------------------------------------------------------------------
+
+/// "新建压缩包" — the same shape as the settings sheet: one header, grouped
+/// rows, a running job pinned above the legend. Sources are gathered here
+/// rather than in the browser so a file from anywhere can join the archive.
+fn create_panel(model: Rc<AppModel>) -> AnyView {
+    let close = model.clone();
+    let start = model.clone();
+    let busy = model.is_busy();
+    let count = model.create_source_count();
+
+    let header = AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            8.0,
+            AnyView::new(views![
+                Text::new("新建压缩包")
+                    .semantic_font(SemanticFontRef::title())
+                    .semantic_foreground(SemanticColorRef::on_surface()),
+                Spacer::new(0.0),
+                Button::new(
+                    Text::new("取消")
+                        .semantic_font(SemanticFontRef::label())
+                        .semantic_foreground(SemanticColorRef::on_surface_variant()),
+                    move || close.close_create(),
+                )
+                .enabled(!busy)
+                .accessibility_text("关闭新建压缩包")
+                .button_style(PlainButtonStyle)
+                .control_size(ControlSize::Small),
+                Button::new(
+                    Text::new("压缩")
+                        .semantic_font(SemanticFontRef::label())
+                        .semantic_foreground(SemanticColorRef::accent()),
+                    move || start.create_now(),
+                )
+                .enabled(!busy && count > 0)
+                .accessibility_text("开始压缩")
+                .tooltip("打包到所选位置")
+                .button_style(PlainButtonStyle)
+                .control_size(ControlSize::Small),
+            ]),
+        )
+        .fill_width(),
+    );
+
+    let sources = model.create_sources.get();
+    let mut rows: Vec<AnyView> = Vec::new();
+    if sources.is_empty() {
+        rows.push(AnyView::new(
+            Text::new("还没有内容。拖入文件或文件夹，或从下面添加。")
+                .semantic_font(SemanticFontRef::caption())
+                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+        ));
+    } else {
+        for (index, path) in sources.iter().enumerate() {
+            rows.push(create_source_row(model.clone(), index, path));
+        }
+    }
+    let add_file = model.clone();
+    let add_folder = model.clone();
+    rows.push(AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            8.0,
+            AnyView::new(views![
+                Button::new(
+                    Text::new("添加文件…")
+                        .semantic_font(SemanticFontRef::label())
+                        .semantic_foreground(SemanticColorRef::on_surface()),
+                    move || add_file.add_create_files(),
+                )
+                .enabled(!busy)
+                .button_style(GhostButtonStyle)
+                .control_size(ControlSize::Small),
+                Button::new(
+                    Text::new("添加文件夹…")
+                        .semantic_font(SemanticFontRef::label())
+                        .semantic_foreground(SemanticColorRef::on_surface()),
+                    move || add_folder.add_create_folder(),
+                )
+                .enabled(!busy)
+                .button_style(GhostButtonStyle)
+                .control_size(ControlSize::Small),
+            ]),
+        )
+        .padding_insets(EdgeInsets::new(6.0, 0.0, 0.0, 0.0)),
+    ));
+    let count_line = if count == 0 {
+        "空".to_owned()
+    } else {
+        format!("{count} 项")
+    };
+    let source_section = settings_section(&format!("内容 · {count_line}"), rows);
+
+    let current_format = model.create_format.get();
+    let mut format_chips: Vec<AnyView> = Vec::new();
+    for format in CreateFormat::ALL {
+        let model_for_chip = model.clone();
+        format_chips.push(create_choice(
+            format.label(),
+            current_format == format,
+            move || model_for_chip.set_create_format(format),
+        ));
+    }
+    let format_note = AnyView::new(
+        Text::new(current_format.note())
+            .semantic_font(SemanticFontRef::caption())
+            .semantic_foreground(SemanticColorRef::on_surface_muted()),
+    );
+    let format_section = settings_section(
+        "格式",
+        vec![
+            AnyView::new(Row::new(VerticalAlignment::Center, 6.0, AnyView::new(format_chips))),
+            format_note,
+        ],
+    );
+
+    let current_level = model.create_level.get();
+    let mut level_chips: Vec<AnyView> = Vec::new();
+    for level in CompressionLevel::ALL {
+        let model_for_chip = model.clone();
+        level_chips.push(create_choice(
+            level.label(),
+            current_level == level,
+            move || model_for_chip.set_create_level(level),
+        ));
+    }
+    let level_section = settings_section(
+        "压缩级别",
+        vec![AnyView::new(Row::new(
+            VerticalAlignment::Center,
+            6.0,
+            AnyView::new(level_chips),
+        ))],
+    );
+
+    let extension = format!(".{}", model.create_format.get().extension());
+    let name_field = AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            10.0,
+            AnyView::new(views![
+                Text::new("文件名")
+                    .semantic_font(SemanticFontRef::body())
+                    .semantic_foreground(SemanticColorRef::on_surface()),
+                AnyView::new(TextField::new("归档", model.create_name.binding()))
+                    .frame_min_width(0.0)
+                    .flex(1.0),
+                Text::new(extension)
+                    .semantic_font(SemanticFontRef::mono())
+                    .semantic_foreground(SemanticColorRef::on_surface_muted()),
+            ]),
+        )
+        .fill_width(),
+    );
+
+    let choose = model.clone();
+    let destination_row = AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            12.0,
+            AnyView::new(views![
+                AnyView::new(
+                    Column::new(
+                        HorizontalAlignment::Leading,
+                        2.0,
+                        AnyView::new(views!(
+                            Text::new("保存到")
+                                .semantic_font(SemanticFontRef::body())
+                                .semantic_foreground(SemanticColorRef::on_surface()),
+                            Text::new(model.create_destination_name())
+                                .line_limit(Some(1))
+                                .truncating_tail()
+                                .semantic_font(SemanticFontRef::caption())
+                                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                        )),
+                    )
+                    .frame_min_width(0.0)
+                    .flex(1.0),
+                ),
+                Button::new(
+                    Text::new("更改…")
+                        .semantic_font(SemanticFontRef::label())
+                        .semantic_foreground(SemanticColorRef::on_surface()),
+                    move || choose.choose_create_destination(),
+                )
+                .enabled(!busy)
+                .button_style(GhostButtonStyle)
+                .control_size(ControlSize::Small),
+            ]),
+        )
+        .fill_width(),
+    );
+    let naming_section = settings_section("命名与位置", vec![name_field, destination_row]);
+
+    let job: AnyView = if busy {
+        let progress = model.progress.get();
+        let cancel = model.clone();
+        AnyView::new(
+            Column::new(
+                HorizontalAlignment::Leading,
+                4.0,
+                AnyView::new(views!(
+                    Row::new(
+                        VerticalAlignment::Center,
+                        10.0,
+                        AnyView::new(views!(
+                            Text::new("压缩中")
+                                .semantic_font(SemanticFontRef::caption())
+                                .semantic_foreground(SemanticColorRef::on_surface()),
+                            Text::new(progress.label.clone())
+                                .semantic_font(SemanticFontRef::mono())
+                                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                            Text::new(progress.current_file.clone())
+                                .line_limit(Some(1))
+                                .truncating_tail()
+                                .semantic_font(SemanticFontRef::caption())
+                                .semantic_foreground(SemanticColorRef::on_surface_muted())
+                                .frame_min_width(0.0)
+                                .flex(1.0),
+                            Button::new(
+                                Text::new("取消")
+                                    .semantic_font(SemanticFontRef::caption())
+                                    .semantic_foreground(SemanticColorRef::on_surface()),
+                                move || cancel.cancel_extract(),
+                            )
+                            .accessibility_text("取消压缩")
+                            .button_style(GhostButtonStyle)
+                            .control_size(ControlSize::Small),
+                        )),
+                    ),
+                    ProgressView::new(Some(progress.fraction))
+                        .height(3.0)
+                        .tone(StatusTone::Info)
+                        .fill_width(),
+                )),
+            )
+            .padding_insets(EdgeInsets::new(8.0, 12.0, 8.0, 12.0))
+            .fill_width()
+            .corner_radius(10.0)
+            .semantic_background(SemanticColorRef::surface_sunken())
+            .semantic_border(SemanticColorRef::border(), 0.5),
+        )
+    } else {
+        AnyView::new(EmptyView)
+    };
+
+    let legend = AnyView::new(
+        Text::new("同名不会覆盖：重名自动加序号；取消或失败会删除临时文件。")
+            .line_limit(Some(2))
+            .truncating_tail()
+            .semantic_font(SemanticFontRef::caption())
+            .semantic_foreground(SemanticColorRef::on_surface_muted()),
+    );
+
+    let body = AnyView::new(vstack(
+        8.0,
+        vec![source_section, format_section, level_section, naming_section, legend],
+    ))
+    .fill_width();
+
+    AnyView::new(
+        BoxView::new(
+            FlexDirection::Column,
+            Align::Stretch,
+            Justify::FlexStart,
+            Wrap::NoWrap,
+            10.0,
+            AnyView::new(TupleView::new(vec![
+                header,
+                job,
+                AnyView::new(
+                    AnyView::new(ScrollView::vertical(body).combine_accessibility(false))
+                        .flex_with(1.0, 1.0, Some(0.0)),
+                ),
+            ])),
+        )
+        .padding_insets(EdgeInsets::new(16.0, 16.0, 16.0, 16.0))
+        .fill_width()
+        .fill_height()
+        .semantic_background(SemanticColorRef::surface_floating())
+        .clipped(),
+    )
+}
+
+/// One selectable label. Selected reads as accent ink on the sunken surface;
+/// unselected stays quiet until hovered, like every other secondary control.
+fn create_choice(label: &'static str, selected: bool, action: impl Fn() + 'static) -> AnyView {
+    let ink = if selected {
+        SemanticColorRef::accent()
+    } else {
+        SemanticColorRef::on_surface_variant()
+    };
+    AnyView::new(
+        Button::new(
+            AnyView::new(
+                Text::new(label)
+                    .semantic_font(SemanticFontRef::label())
+                    .semantic_foreground(ink),
+            )
+            .padding_insets(EdgeInsets::new(5.0, 10.0, 5.0, 10.0))
+            .corner_radius(7.0)
+            .semantic_background(if selected {
+                SemanticColorRef::surface()
+            } else {
+                SemanticColorRef::surface_sunken()
+            })
+            .semantic_border(
+                if selected {
+                    SemanticColorRef::accent()
+                } else {
+                    SemanticColorRef::border()
+                },
+                0.5,
+            ),
+            action,
+        )
+        .button_style(PlainButtonStyle)
+        .control_size(ControlSize::Small),
+    )
+}
+
+fn create_source_row(model: Rc<AppModel>, index: usize, path: &std::path::Path) -> AnyView {
+    let remove = model.clone();
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let parent = path
+        .parent()
+        .map(|parent| parent.display().to_string())
+        .unwrap_or_default();
+    AnyView::new(
+        Row::new(
+            VerticalAlignment::Center,
+            10.0,
+            AnyView::new(views![
+                AnyView::new(ButtonIcon::new(
+                    ButtonIconSource::resource(file::archive()),
+                    Some(14.0),
+                    None,
+                ))
+                .semantic_foreground(SemanticColorRef::on_surface_variant()),
+                AnyView::new(
+                    Column::new(
+                        HorizontalAlignment::Leading,
+                        2.0,
+                        AnyView::new(views!(
+                            Text::new(name)
+                                .line_limit(Some(1))
+                                .truncating_tail()
+                                .semantic_font(SemanticFontRef::body())
+                                .semantic_foreground(SemanticColorRef::on_surface()),
+                            Text::new(parent)
+                                .line_limit(Some(1))
+                                .truncating_tail()
+                                .semantic_font(SemanticFontRef::caption())
+                                .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                        )),
+                    )
+                    .frame_min_width(0.0)
+                    .flex(1.0),
+                ),
+                Button::new(
+                    Text::new("移除")
+                        .semantic_font(SemanticFontRef::caption())
+                        .semantic_foreground(SemanticColorRef::on_surface_muted()),
+                    move || remove.remove_create_source(index),
+                )
+                .accessibility_text("从压缩内容中移除")
+                .button_style(PlainButtonStyle)
+                .control_size(ControlSize::Small),
+            ]),
+        )
+        .padding_insets(EdgeInsets::new(5.0, 2.0, 5.0, 2.0))
+        .fill_width(),
+    )
 }
 
 // ---------------------------------------------------------------------------
