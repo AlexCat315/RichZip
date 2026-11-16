@@ -116,7 +116,7 @@ jobs:
           sudo apt-get install -y \
             cmake ninja-build pkg-config \
             libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
-            libxfixes-dev libxinerama-dev libxss-dev \
+            libxfixes-dev libxinerama-dev libxss-dev libxtst-dev libx11-xcb-dev \
             libasound2-dev libpulse-dev libwayland-dev libdecor-0-dev \
             libxkbcommon-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev
 
@@ -164,7 +164,7 @@ jobs:
           Homepage: https://github.com/AlexCat315/RichZip
           Description: Cross-platform archive manager
            Browse, extract and create archives with a native Cove UI.
-          Depends: libc6, libstdc++6, libx11-6, libxext6, libxrandr2, libxi6, libxcursor1, libxfixes3, libxinerama1, libxss1, libasound2t64 | libasound2, libwayland-client0, libdecor-0-0, libxkbcommon0, libdrm2, libgbm1, libdbus-1-3, libudev1
+          Depends: libc6, libstdc++6, libx11-6, libxext6, libxrandr2, libxi6, libxcursor1, libxfixes3, libxinerama1, libxss1, libxtst6, libasound2t64 | libasound2, libwayland-client0, libdecor-0-0, libxkbcommon0, libdrm2, libgbm1, libdbus-1-3, libudev1
           EOF
 
           dpkg-deb --build --root-owner-group target/deb/mugenzip \
