@@ -8,11 +8,13 @@
 use cove_ui::compose::theme::{RadiusScale, TextStyleToken, Theme, Typography};
 use cove_ui::core::{Color, Font, FontWeight};
 
-/// The two authored appearances. `RadioGroup` requires the value to be
-/// hashable and shareable, so the enum carries those derives.
+/// The selected appearance. `RadioGroup` requires the value to be hashable
+/// and shareable, so the enum carries those derives.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ThemeMode {
+    /// Follow the operating system's light/dark setting.
     #[default]
+    System,
     Light,
     Dark,
 }
@@ -21,6 +23,7 @@ impl ThemeMode {
     /// Localized label shown in the settings picker.
     pub fn title(self) -> &'static str {
         match self {
+            Self::System => "跟随系统",
             Self::Light => "浅色",
             Self::Dark => "暗色",
         }
@@ -148,11 +151,15 @@ pub fn ink() -> Theme {
 
 /// Resolves the authored theme for a mode. Kept in one place so the launch
 /// wrapper and any preview share the same mapping.
-pub fn resolve(mode: ThemeMode) -> Theme {
-    match mode {
-        ThemeMode::Light => paper(),
-        ThemeMode::Dark => ink(),
-    }
+/// Resolves the authored theme. `system_dark` is the host-reported OS
+/// appearance (`None` when unknown); it only feeds the `System` choice.
+pub fn resolve(mode: ThemeMode, system_dark: Option<bool>) -> Theme {
+    let dark = match mode {
+        ThemeMode::System => system_dark.unwrap_or(false),
+        ThemeMode::Light => false,
+        ThemeMode::Dark => true,
+    };
+    if dark { ink() } else { paper() }
 }
 
 /// One step denser than the stock scale: the list is the app, so its body

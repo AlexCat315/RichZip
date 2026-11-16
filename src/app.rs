@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use cove_ui::ApplicationLaunch;
+use cove_ui::compose::adaptive::SurfaceEnvironment;
 use cove_ui::compose::theme::ThemeViewExt;
 use cove_ui::composition::{AnyView, DynamicField, Scope, View};
 use cove_ui::hosts::shell_services::{self, ShellVerb};
@@ -63,8 +64,9 @@ struct ThemedContent {
 }
 
 impl View for ThemedContent {
-    fn body(&self, _cx: &Scope) -> AnyView {
-        let theme = theme::resolve(self.model.theme_mode());
+    fn body(&self, cx: &Scope) -> AnyView {
+        let env = cx.composition_value(&SurfaceEnvironment::key());
+        let theme = theme::resolve(self.model.theme_mode(), env.system_appearance.is_dark());
         AnyView::new(AnyView::new(self.content.clone()).theme(theme))
     }
 

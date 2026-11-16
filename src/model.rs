@@ -224,7 +224,7 @@ impl AppModel {
         let package_selection = State::new(BTreeSet::new());
         let settings_open = State::new(false);
         let reveal_after_extract = State::new(true);
-        let theme_mode = State::new(Some(ThemeMode::Light));
+        let theme_mode = State::new(Some(ThemeMode::System));
         let reveal_for_events = reveal_after_extract.clone();
         let location_for_events = location.clone();
         let task = Rc::new(RefCell::new(TaskSlot::default()));

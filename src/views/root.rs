@@ -1442,7 +1442,9 @@ fn settings_panel(model: Rc<AppModel>) -> AnyView {
         .padding_insets(EdgeInsets::new(16.0, 16.0, 16.0, 16.0))
         .fill_width()
         .fill_height()
-        .semantic_background(SemanticColorRef::surface())
+        // Match the Modal panel's own surface so the inner sheet never shows a
+        // second, differently coloured backing at the bottom edge.
+        .semantic_background(SemanticColorRef::surface_floating())
         .clipped(),
     )
 }
@@ -1504,12 +1506,13 @@ fn settings_toggle(title: &'static str, hint: &'static str, binding: cove_ui::co
 /// directly; the wrapper theme provider re-resolves on every change.
 fn settings_theme_row(model: Rc<AppModel>) -> AnyView {
     let options = vec![
+        RadioOption::new(ThemeMode::System, ThemeMode::System.title()),
         RadioOption::new(ThemeMode::Light, ThemeMode::Light.title()),
         RadioOption::new(ThemeMode::Dark, ThemeMode::Dark.title()),
     ];
     let picker = AnyView::new(
         RadioGroup::try_new(model.theme_mode.binding(), options)
-            .expect("light and dark are distinct theme modes")
+            .expect("system, light and dark are distinct theme modes")
             .horizontal(true),
     );
     AnyView::new(
@@ -1525,7 +1528,7 @@ fn settings_theme_row(model: Rc<AppModel>) -> AnyView {
                             Text::new("主题")
                                 .semantic_font(SemanticFontRef::body())
                                 .semantic_foreground(SemanticColorRef::on_surface()),
-                            Text::new("在浅色纸白与暗色墨色之间切换")
+                            Text::new("跟随系统深浅色，或手动指定浅色 / 暗色")
                                 .line_limit(Some(2))
                                 .truncating_tail()
                                 .semantic_font(SemanticFontRef::caption())
