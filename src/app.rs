@@ -8,6 +8,7 @@ use cove_ui::composition::{AnyView, DynamicField, Scope, View};
 use cove_ui::hosts::shell_services::{self, ShellVerb};
 use cove_ui::hosts::status_item::{self, StatusEntry};
 
+use crate::compress_service;
 use crate::extract_service;
 use crate::menu_bar::menu_bar;
 use crate::model::AppModel;
@@ -37,24 +38,38 @@ pub fn application() -> ApplicationLaunch {
                 label: Some("解压到同名文件夹"),
                 selector: "coveExtractFolderService:",
             },
+            ShellVerb {
+                id: "compress-here",
+                label: Some("压缩到此处"),
+                selector: "coveCompressHereService:",
+            },
         ],
         move |verb, paths| {
             /* "open" wants the window; the in-place verbs do not, so they work
                headlessly and hand the app straight back to whatever was in front. */
-            if matches!(verb, "extract-here" | "extract-folder") {
+            if matches!(verb, "extract-here" | "extract-folder" | "compress-here") {
                 shell_services::yield_to_background();
             }
+            let mut compress_paths: Vec<PathBuf> = Vec::new();
             for path in paths {
                 let path = PathBuf::from(path);
                 match verb {
                     "extract-here" => extract_service::run(path, extract_service::Placement::Here),
                     "extract-folder" => extract_service::run(path, extract_service::Placement::IntoFolder),
+                    "compress-here" => compress_paths.push(path),
                     _ => {
                         if !services.is_busy() {
                             services.open(path);
                         }
                     }
                 }
+            }
+            if !compress_paths.is_empty() {
+                compress_service::run(
+                    compress_paths,
+                    services.default_create_format.get(),
+                    services.default_create_level.get(),
+                );
             }
         },
     );
@@ -71,6 +86,10 @@ pub fn application() -> ApplicationLaunch {
             id: "settings",
             title: "设置…",
         },
+        StatusEntry {
+            id: "create",
+            title: "新建压缩包…",
+        },
         StatusEntry { id: "", title: "" },
         StatusEntry {
             id: "quit",
@@ -82,6 +101,7 @@ pub fn application() -> ApplicationLaunch {
     let _ = status_item::install("archivebox", "MugenZip", STATUS_MENU, move |id| match id {
         "open" => menu_model.open_dialog(),
         "settings" => menu_model.open_settings(),
+        "create" => menu_model.open_create(),
         _ => {}
     });
     ApplicationLaunch::new(root)

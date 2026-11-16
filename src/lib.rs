@@ -1,5 +1,6 @@
 mod app;
 mod browser;
+mod compress_service;
 mod extract_service;
 mod menu_bar;
 mod model;
