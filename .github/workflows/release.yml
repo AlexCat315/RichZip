@@ -168,36 +168,40 @@ jobs:
           Type=Application
           Name=MugenZip
           Comment=Archive manager
-          Exec=mugenzip %f
+          Exec=mugenzip %F
           Icon=/usr/share/pixmaps/mugenzip.png
           Terminal=false
           Categories=Utility;Archiving;
           MimeType=application/zip;application/x-7z-compressed;application/vnd.rar;application/x-tar;application/gzip;application/x-bzip2;application/x-xz;
-          Actions=ExtractHere;ExtractFolder;SmartExtract;CompressZip;Compress7z;CompressUi;
+          Actions=ExtractHere;ExtractFolder;SmartExtract;CompressZip;Compress7z;CompressTarGz;CompressUi;
 
           [Desktop Action ExtractHere]
           Name=解压到当前目录
-          Exec=mugenzip --verb extract-here %f
+          Exec=mugenzip --verb extract-here %F
 
           [Desktop Action ExtractFolder]
           Name=解压到同名目录
-          Exec=mugenzip --verb extract-folder %f
+          Exec=mugenzip --verb extract-folder %F
 
           [Desktop Action SmartExtract]
           Name=智能解压到同名目录
-          Exec=mugenzip --verb smart-extract %f
+          Exec=mugenzip --verb smart-extract %F
 
           [Desktop Action CompressZip]
           Name=压缩至 ZIP
-          Exec=mugenzip --verb compress-zip %f
+          Exec=mugenzip --verb compress-zip %F
 
           [Desktop Action Compress7z]
           Name=压缩至 7Z
-          Exec=mugenzip --verb compress-7z %f
+          Exec=mugenzip --verb compress-7z %F
+
+          [Desktop Action CompressTarGz]
+          Name=压缩至 TAR.GZ
+          Exec=mugenzip --verb compress-targz %F
 
           [Desktop Action CompressUi]
           Name=在 MugenZip 中压缩
-          Exec=mugenzip --verb compress-ui %f
+          Exec=mugenzip --verb compress-ui %F
           DESKTOP
 
           cat > target/deb/mugenzip/DEBIAN/control <<EOF
@@ -260,6 +264,12 @@ jobs:
           generate_release_notes: true
           body: |
             MugenZip ${{ github.ref_name }}
+
+            本版重点：
+
+            - Windows 任意文件、文件夹和目录空白处都会出现原生 MugenZip 右键菜单，不打开主窗口即可解压、压缩、校验哈希。
+            - 三平台新增「压缩至 TAR.GZ」，Windows 目录菜单支持在当前目录内直接生成归档。
+            - Windows/Linux 多选路径改用完整参数传递，Linux Nautilus 修复含空格路径。
 
             | 平台 | 文件 |
             | --- | --- |
