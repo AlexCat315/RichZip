@@ -2,7 +2,7 @@
 Type=Service
 X-KDE-ServiceTypes=KonqPopupMenu/Plugin
 MimeType=application/zip;application/x-tar;application/x-7z-compressed;application/vnd.rar;application/gzip;application/x-xz;application/x-bzip2;application/x-compressed-tar;
-Actions=Open;ExtractHere;ExtractFolder;SmartExtract;CompressZip;Compress7z;CompressUi;HashCrc32;HashMd5;HashSha1;HashSha256;HashSha512;
+Actions=Open;ExtractHere;ExtractFolder;SmartExtract;CompressZip;Compress7z;CompressTarGz;CompressUi;HashCrc32;HashMd5;HashSha1;HashSha256;HashSha512;
 X-KDE-Priority=TopLevel
 X-KDE-Submenu=MugenZip
 
@@ -35,6 +35,11 @@ Exec=mugenzip --verb compress-zip %F
 Name=压缩至 7Z
 Icon=mugenzip
 Exec=mugenzip --verb compress-7z %F
+
+[Desktop Action CompressTarGz]
+Name=压缩至 TAR.GZ
+Icon=mugenzip
+Exec=mugenzip --verb compress-targz %F
 
 [Desktop Action CompressUi]
 Name=在 MugenZip 中压缩

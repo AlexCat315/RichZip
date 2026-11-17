@@ -37,6 +37,12 @@ fn run_verb(verb: &str, paths: Vec<PathBuf>) -> Result<(), String> {
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         }
+        "reveal" => {
+            if let Some(path) = paths.first() {
+                cove_ui::hosts::shell_services::reveal(path);
+            }
+            Ok(())
+        }
         "extract-here" | "extract-folder" | "smart-extract" => {
             let placement = match verb {
                 "extract-here" => extract_service::Placement::Here,
@@ -52,14 +58,13 @@ fn run_verb(verb: &str, paths: Vec<PathBuf>) -> Result<(), String> {
             }
             Ok(())
         }
-        "compress-here" | "compress-zip" | "compress-7z" => {
+        "compress-here" | "compress-zip" | "compress-7z" | "compress-targz" => {
             let settings = Settings::load();
-            let format = if verb == "compress-7z" {
-                CreateFormat::SevenZ
-            } else if verb == "compress-here" {
-                settings.default_create_format
-            } else {
-                CreateFormat::Zip
+            let format = match verb {
+                "compress-7z" => CreateFormat::SevenZ,
+                "compress-targz" => CreateFormat::TarGz,
+                "compress-zip" => CreateFormat::Zip,
+                _ => settings.default_create_format,
             };
             let level = if verb == "compress-here" {
                 settings.default_create_level
@@ -67,6 +72,26 @@ fn run_verb(verb: &str, paths: Vec<PathBuf>) -> Result<(), String> {
                 CompressionLevel::Balanced
             };
             if let Some(path) = compress_service::run_blocking(paths, format, level) {
+                cove_ui::hosts::shell_services::reveal(&path);
+            }
+            Ok(())
+        }
+        "compress-current-zip" | "compress-current-7z" | "compress-current-targz" => {
+            let settings = Settings::load();
+            let format = match verb {
+                "compress-current-7z" => CreateFormat::SevenZ,
+                "compress-current-targz" => CreateFormat::TarGz,
+                _ => CreateFormat::Zip,
+            };
+            let mut last_output = None;
+            for path in paths {
+                last_output = compress_service::run_current_dir_blocking(
+                    path,
+                    format,
+                    settings.default_create_level,
+                );
+            }
+            if let Some(path) = last_output {
                 cove_ui::hosts::shell_services::reveal(&path);
             }
             Ok(())

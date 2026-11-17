@@ -5,30 +5,34 @@ Terminal=false
 MimeType=application/zip;application/x-tar;application/x-7z-compressed;application/vnd.rar;application/gzip;application/x-xz;
 Name=MugenZip
 Comment=Archive manager
-Exec=mugenzip %f
+Exec=mugenzip %F
 Icon=mugenzip
-Actions=ExtractHere;ExtractFolder;SmartExtract;CompressZip;Compress7z;CompressUi;
+Actions=ExtractHere;ExtractFolder;SmartExtract;CompressZip;Compress7z;CompressTarGz;CompressUi;
 
 [Desktop Action ExtractHere]
 Name=解压到当前目录
-Exec=mugenzip --verb extract-here %f
+Exec=mugenzip --verb extract-here %F
 
 [Desktop Action ExtractFolder]
 Name=解压到同名目录
-Exec=mugenzip --verb extract-folder %f
+Exec=mugenzip --verb extract-folder %F
 
 [Desktop Action SmartExtract]
 Name=智能解压到同名目录
-Exec=mugenzip --verb smart-extract %f
+Exec=mugenzip --verb smart-extract %F
 
 [Desktop Action CompressZip]
 Name=压缩至 ZIP
-Exec=mugenzip --verb compress-zip %f
+Exec=mugenzip --verb compress-zip %F
 
 [Desktop Action Compress7z]
 Name=压缩至 7Z
-Exec=mugenzip --verb compress-7z %f
+Exec=mugenzip --verb compress-7z %F
+
+[Desktop Action CompressTarGz]
+Name=压缩至 TAR.GZ
+Exec=mugenzip --verb compress-targz %F
 
 [Desktop Action CompressUi]
 Name=在 MugenZip 中压缩
-Exec=mugenzip --verb compress-ui %f
+Exec=mugenzip --verb compress-ui %F

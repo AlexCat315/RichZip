@@ -55,6 +55,11 @@ pub fn application() -> ApplicationLaunch {
                 selector: "coveCompressSevenZService:",
             },
             ShellVerb {
+                id: "compress-targz",
+                label: Some("压缩至 TAR.GZ"),
+                selector: "coveCompressTarGzService:",
+            },
+            ShellVerb {
                 id: "compress-ui",
                 label: Some("在 MugenZip 中压缩"),
                 selector: "coveCompressPanelService:",
@@ -105,7 +110,7 @@ pub fn application() -> ApplicationLaunch {
                     "smart-extract" => {
                         extract_service::run(path, extract_service::Placement::Smart)
                     }
-                    "compress-zip" | "compress-7z" | "compress-here" => {
+                    "compress-zip" | "compress-7z" | "compress-targz" | "compress-here" => {
                         compress_paths.push(path)
                     }
                     "compress-ui" => handoff_paths.push(path),
@@ -122,10 +127,11 @@ pub fn application() -> ApplicationLaunch {
                 }
             }
             if !compress_paths.is_empty() {
-                let format = if verb == "compress-7z" {
-                    mugenzip_core::CreateFormat::SevenZ
-                } else {
-                    services.default_create_format.get()
+                let format = match verb {
+                    "compress-7z" => mugenzip_core::CreateFormat::SevenZ,
+                    "compress-targz" => mugenzip_core::CreateFormat::TarGz,
+                    "compress-zip" => mugenzip_core::CreateFormat::Zip,
+                    _ => services.default_create_format.get(),
                 };
                 compress_service::run(
                     compress_paths,

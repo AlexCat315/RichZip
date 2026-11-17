@@ -55,6 +55,39 @@ pub fn run_blocking(
         .map(|report| report.path)
 }
 
+/// Packs the *contents* of `dir` into an archive inside `dir` itself.
+///
+/// This is the Explorer background verb: right-clicking empty space inside a
+/// folder means "archive this folder here", not "archive the folder next to
+/// itself". The archive keeps the folder's name, so `Photos/` becomes
+/// `Photos/Photos.zip`.
+pub fn run_current_dir_blocking(
+    dir: PathBuf,
+    format: mugenzip_core::CreateFormat,
+    level: mugenzip_core::CompressionLevel,
+) -> Option<PathBuf> {
+    let name = dir.file_name()?.to_string_lossy().into_owned();
+    let sources: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .collect();
+    if sources.is_empty() {
+        return None;
+    }
+    let request = mugenzip_core::CreateRequest {
+        sources,
+        destination_dir: dir,
+        name,
+        format,
+        level,
+    };
+    let cancel = AtomicBool::new(false);
+    mugenzip_core::create_archive(&request, &mut |_| {}, &cancel)
+        .ok()
+        .map(|report| report.path)
+}
+
 /// One folder keeps its name; one file loses its extension; a mixed selection
 /// has no better name than 归档.
 fn archive_name(items: &[PathBuf]) -> String {
