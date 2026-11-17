@@ -1,6 +1,6 @@
 [package]
 name = "mugenzip"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.99.1"
 default-run = "mugenzip"
@@ -17,7 +17,7 @@ resources = ["assets"]
 members = [".", "crates/core", "xtask"]
 
 [dependencies]
-cove-ui = { git = "https://github.com/AlexCat315/Cove", tag = "v0.3.1" }
+cove-ui = { git = "https://github.com/AlexCat315/Cove", tag = "v0.3.2" }
 mugenzip-core = { path = "crates/core" }
 
 [build-dependencies]

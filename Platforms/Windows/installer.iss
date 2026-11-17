@@ -1,6 +1,6 @@
 ; MugenZip per-user installer. Built on Windows with Inno Setup 6.
 #ifndef AppVersion
-  #define AppVersion "0.3.1"
+  #define AppVersion "0.3.2"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\..\target\release-app\MugenZip"

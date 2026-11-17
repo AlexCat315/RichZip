@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: AlexCat315/Cove
-          ref: v0.3.1
+          ref: v0.3.2
           path: Cove
 
       - name: Setup Rust
@@ -267,6 +267,7 @@ jobs:
 
             本版重点：
 
+            - 修复 Windows 高 DPI（125%/150%/200%）下输入法组合串与候选框偏离输入框的问题：Cove 现在把逻辑输入区域换算成物理客户区像素后再交给 SDL。
             - Windows 任意文件、文件夹和目录空白处都会出现原生 MugenZip 右键菜单，不打开主窗口即可解压、压缩、校验哈希。
             - 三平台新增「压缩至 TAR.GZ」，Windows 目录菜单支持在当前目录内直接生成归档。
             - Windows/Linux 多选路径改用完整参数传递，Linux Nautilus 修复含空格路径。

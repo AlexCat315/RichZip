@@ -41,7 +41,7 @@ sudo apt install ./mugenzip_<version>_amd64.deb
 
 ## 从源码构建
 
-需要 Rust 1.99.1。Cove 以 `v0.3.1` 标签作为 git 依赖，首次构建会联网拉取。
+需要 Rust 1.99.1。Cove 以 `v0.3.2` 标签作为 git 依赖，首次构建会联网拉取。
 
 ```bash
 git clone https://github.com/AlexCat315/RichZip.git
@@ -52,7 +52,7 @@ cargo build --release
 macOS 打包还需要同级目录的 Cove 源码，用来构建 `cove-package`：
 
 ```bash
-git clone --branch v0.3.1 https://github.com/AlexCat315/Cove.git ../Cove
+git clone --branch v0.3.2 https://github.com/AlexCat315/Cove.git ../Cove
 COVE_ROOT=../Cove bash scripts/package-macos.sh --release
 ```
 
